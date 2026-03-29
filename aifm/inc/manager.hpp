@@ -15,6 +15,7 @@
 #include "queue.hpp"
 #include "region.hpp"
 #include "stack.hpp"
+#include "treeset.hpp"
 
 #include <atomic>
 #include <functional>
@@ -196,6 +197,12 @@ public:
   List<T> allocate_list(const DerefScope &scope, bool enable_merge = false);
   template <typename T> Queue<T> allocate_queue(const DerefScope &scope);
   template <typename T> Stack<T> allocate_stack(const DerefScope &scope);
+
+  // TREESET: BEGIN CHANGES
+  template <typename T> TreeSet<T> allocate_treeset();
+  template <typename T> TreeSet<T> *allocate_treeset_heap();
+
+  // TREESET: END CHANGES
   void register_eval_notifier(uint8_t ds_id, EvacNotifier notifier);
   void register_copy_notifier(uint8_t ds_id, CopyNotifier notifier);
   void read_object(uint8_t ds_id, uint8_t obj_id_len, const uint8_t *obj_id,
