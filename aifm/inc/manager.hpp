@@ -232,4 +232,5 @@ public:
 
 } // namespace far_memory
 
+#include "internal/treeset.ipp"
 #include "internal/manager.ipp"

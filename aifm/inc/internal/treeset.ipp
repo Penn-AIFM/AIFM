@@ -4,10 +4,6 @@
 
 namespace far_memory {
 
-// Forward declarations - full definitions available when templates are instantiated
-class FarMemManager;
-class FarMemManagerFactory;
-
 // ============================================================================
 // GenericIteratorImpl
 // ============================================================================
