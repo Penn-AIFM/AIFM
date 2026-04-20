@@ -20,4 +20,7 @@ constexpr static uint8_t kHashTableDSType = 1;
 // DataFrameVector.
 constexpr static uint8_t kDataFrameVectorDSType = 2;
 
+// Bitmap.
+constexpr static uint8_t kBitmapDSType = 3;
+
 } // namespace far_memory

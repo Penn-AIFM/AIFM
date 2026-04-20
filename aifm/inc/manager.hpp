@@ -3,6 +3,7 @@
 #include "sync.h"
 
 #include "array.hpp"
+#include "bitmap.hpp"
 #include "cb.hpp"
 #include "concurrent_hopscotch.hpp"
 #include "device.hpp"
@@ -172,6 +173,8 @@ public:
   template <typename T, uint64_t... Dims> Array<T, Dims...> allocate_array();
   template <typename T, uint64_t... Dims>
   Array<T, Dims...> *allocate_array_heap();
+  Bitmap allocate_bitmap(uint64_t num_bits);
+  Bitmap *allocate_bitmap_heap(uint64_t num_bits);
   GenericConcurrentHopscotch
   allocate_concurrent_hopscotch(uint32_t local_num_entries_shift,
                                 uint32_t remote_num_entries_shift,

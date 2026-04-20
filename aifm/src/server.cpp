@@ -6,6 +6,7 @@ extern "C" {
 }
 
 #include "server.hpp"
+#include "server_bitmap.hpp"
 #include "server_dataframe_vector.hpp"
 #include "server_hashtable.hpp"
 #include "server_ptr.hpp"
@@ -18,6 +19,7 @@ Server::Server() {
   register_ds(kVanillaPtrDSType, new ServerPtrFactory());
   register_ds(kHashTableDSType, new ServerHashTableFactory());
   register_ds(kDataFrameVectorDSType, new ServerDataFrameVectorFactory());
+  register_ds(kBitmapDSType, new ServerBitmapFactory());
 }
 
 void Server::register_ds(uint8_t ds_type, ServerDSFactory *factory) {
