@@ -104,6 +104,11 @@ FORCE_INLINE Stack<T> FarMemManager::allocate_stack(const DerefScope &scope) {
   return Stack<T>(scope);
 }
 
+template <typename T, uint64_t MaxN>
+FORCE_INLINE Heap<T, MaxN> FarMemManager::allocate_heap() {
+  return Heap<T, MaxN>(this);
+}
+
 template <typename T>
 FORCE_INLINE DataFrameVector<T> FarMemManager::allocate_dataframe_vector() {
   return DataFrameVector<T>(this);

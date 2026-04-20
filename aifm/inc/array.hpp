@@ -13,6 +13,7 @@
 namespace far_memory {
 
 class FarMemManager;
+template <typename T, uint64_t MaxN> class Heap;
 
 class GenericArray {
 protected:
@@ -60,6 +61,7 @@ private:
 
   friend class FarMemManager;
   friend class FarMemTest;
+  template <typename U, uint64_t MaxN> friend class Heap;
 
   Array(FarMemManager *manager);
   NOT_COPYABLE(Array);

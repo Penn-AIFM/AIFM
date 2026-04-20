@@ -6,6 +6,7 @@
 #include "cb.hpp"
 #include "concurrent_hopscotch.hpp"
 #include "device.hpp"
+#include "heap.hpp"
 #include "helpers.hpp"
 #include "internal/ds_info.hpp"
 #include "list.hpp"
@@ -196,6 +197,7 @@ public:
   List<T> allocate_list(const DerefScope &scope, bool enable_merge = false);
   template <typename T> Queue<T> allocate_queue(const DerefScope &scope);
   template <typename T> Stack<T> allocate_stack(const DerefScope &scope);
+  template <typename T, uint64_t MaxN> Heap<T, MaxN> allocate_heap();
   void register_eval_notifier(uint8_t ds_id, EvacNotifier notifier);
   void register_copy_notifier(uint8_t ds_id, CopyNotifier notifier);
   void read_object(uint8_t ds_id, uint8_t obj_id_len, const uint8_t *obj_id,
