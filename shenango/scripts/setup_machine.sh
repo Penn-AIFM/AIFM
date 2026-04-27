@@ -34,5 +34,7 @@ echo 2 > /sys/devices/cpu/rdpmc
 # THP is only used with madvise
 echo madvise > /sys/kernel/mm/transparent_hugepage/enabled
 
-# Enable turbo boost
-echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo
+# Enable turbo boost (CloudLab xl170 / Intel P-state; skip if absent)
+if [[ -w /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+	echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo
+fi

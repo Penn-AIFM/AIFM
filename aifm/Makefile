@@ -29,6 +29,9 @@ test_array_add_rw_api_obj = $(test_array_add_rw_api_src:.cpp=.o)
 test_tcp_array_add_src = test/test_tcp_array_add.cpp
 test_tcp_array_add_obj = $(test_tcp_array_add_src:.cpp=.o)
 
+test_tcp_heap_src = test/test_tcp_heap.cpp
+test_tcp_heap_obj = $(test_tcp_heap_src:.cpp=.o)
+
 test_array_clock_replacement_src = test/test_array_clock_replacement.cpp
 test_array_clock_replacement_obj = $(test_array_clock_replacement_src:.cpp=.o)
 
@@ -77,6 +80,9 @@ test_queue_gc_obj = $(test_queue_gc_src:.cpp=.o)
 test_stack_gc_src = test/test_stack_gc.cpp
 test_stack_gc_obj = $(test_stack_gc_src:.cpp=.o)
 
+test_heap_src = test/test_heap.cpp
+test_heap_obj = $(test_heap_src:.cpp=.o)
+
 test_list_gc_src = test/test_list_gc.cpp
 test_list_gc_obj = $(test_list_gc_src:.cpp=.o)
 
@@ -101,11 +107,11 @@ lib_obj = $(lib_src:.cpp=.o)
 
 test_src = $(test_pointer_noswap_src) $(test_pointer_swap_src) $(test_pointer_concurrent_src)  \
 $(test_tcp_pointer_swap_src) $(test_array_add_src) $(test_array_nt_src) \
-$(test_array_clock_replacement_src) $(test_tcp_array_add_src) $(test_hopscotch_serial_src) \
+$(test_array_clock_replacement_src) $(test_tcp_array_add_src) $(test_tcp_heap_src) $(test_hopscotch_serial_src) \
 $(test_slab_src) $(test_local_hopscotch_serial) $(test_hopscotch_gc_serial_src) \
 $(test_hopscotch_parallel_src) $(test_hopscotch_gc_parallel_src) $(test_tcp_hopscotch_gc_serial_src) \
 $(test_tcp_hopscotch_gc_parallel_src) $(test_hashtable_clock_replacement_src) $(test_local_list) \
-$(test_list) $(test_list_gc) $(test_queue_gc) $(test_stack_gc) $(test_pointer_swap_rw_api_src) \
+$(test_list) $(test_list_gc) $(test_queue_gc) $(test_stack_gc) $(test_heap_src) $(test_pointer_swap_rw_api_src) \
 $(test_array_add_rw_api_src) $(test_dataframe_vector_src) $(test_csv_reader_src) $(test_shared_pointer_src) \
 $(test_embedded_pointer_src) $(test_bitmap_src)
 test_obj = $(test_src:.cpp=.o)
@@ -123,10 +129,10 @@ override LDFLAGS += -lnuma
 
 all: bin/test_pointer_noswap bin/test_pointer_swap bin/test_pointer_concurrent bin/test_array_add bin/test_array_nt \
 bin/test_array_clock_replacement bin/tcp_device_server bin/tcp_device_server bin/test_tcp_pointer_swap \
-bin/test_tcp_array_add bin/test_hopscotch_serial bin/test_slab bin/test_local_hopscotch_serial \
+bin/test_tcp_array_add bin/test_tcp_heap bin/test_hopscotch_serial bin/test_slab bin/test_local_hopscotch_serial \
 bin/test_hopscotch_gc_serial bin/test_hopscotch_parallel bin/test_hopscotch_gc_parallel \
 bin/test_tcp_hopscotch_gc_serial bin/test_tcp_hopscotch_gc_parallel bin/test_hashtable_clock_replacement \
-bin/test_local_skiplist_serial bin/test_local_list bin/test_list bin/test_list_gc bin/test_queue_gc bin/test_stack_gc \
+bin/test_local_skiplist_serial bin/test_local_list bin/test_list bin/test_list_gc bin/test_queue_gc bin/test_stack_gc bin/test_heap \
 bin/test_pointer_swap_rw_api bin/test_array_add_rw_api bin/test_dataframe_vector bin/test_csv_reader \
 bin/test_shared_pointer bin/test_embedded_pointer bin/test_bitmap libaifm.a
 
@@ -147,6 +153,9 @@ bin/test_array_add: $(test_array_add_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_ob
 
 bin/test_tcp_array_add: $(test_tcp_array_add_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
 	$(LDXX) -o $@ $(test_tcp_array_add_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
+
+bin/test_tcp_heap: $(test_tcp_heap_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
+	$(LDXX) -o $@ $(test_tcp_heap_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
 
 bin/test_array_clock_replacement: $(test_array_clock_replacement_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
 	$(LDXX) -o $@ $(test_array_clock_replacement_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
@@ -198,6 +207,9 @@ bin/test_queue_gc: $(test_queue_gc_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
 
 bin/test_stack_gc: $(test_stack_gc_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
 	$(LDXX) -o $@ $(test_stack_gc_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
+
+bin/test_heap: $(test_heap_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
+	$(LDXX) -o $@ $(test_heap_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
 
 bin/test_list_gc: $(test_list_gc_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
 	$(LDXX) -o $@ $(test_list_gc_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
