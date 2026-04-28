@@ -816,6 +816,14 @@ bool FarMemManager::reallocate_generic_unique_ptr_nb(const DerefScope &scope,
   return true;
 }
 
+Bitmap FarMemManager::allocate_bitmap(uint64_t num_bits) {
+  return Bitmap(allocate_ds_id(), num_bits);
+}
+
+Bitmap *FarMemManager::allocate_bitmap_heap(uint64_t num_bits) {
+  return new Bitmap(allocate_ds_id(), num_bits);
+}
+
 GenericConcurrentHopscotch
 FarMemManager::allocate_concurrent_hopscotch(uint32_t local_num_entries_shift,
                                              uint32_t remote_num_entries_shift,

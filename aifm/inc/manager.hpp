@@ -3,9 +3,11 @@
 #include "sync.h"
 
 #include "array.hpp"
+#include "bitmap.hpp"
 #include "cb.hpp"
 #include "concurrent_hopscotch.hpp"
 #include "device.hpp"
+#include "heap.hpp"
 #include "helpers.hpp"
 #include "internal/ds_info.hpp"
 #include "list.hpp"
@@ -173,6 +175,8 @@ public:
   template <typename T, uint64_t... Dims> Array<T, Dims...> allocate_array();
   template <typename T, uint64_t... Dims>
   Array<T, Dims...> *allocate_array_heap();
+  Bitmap allocate_bitmap(uint64_t num_bits);
+  Bitmap *allocate_bitmap_heap(uint64_t num_bits);
   GenericConcurrentHopscotch
   allocate_concurrent_hopscotch(uint32_t local_num_entries_shift,
                                 uint32_t remote_num_entries_shift,
@@ -203,6 +207,7 @@ public:
   template <typename T> TreeSet<T> *allocate_treeset_heap();
 
   // TREESET: END CHANGES
+  template <typename T, uint64_t MaxN> Heap<T, MaxN> allocate_heap();
   void register_eval_notifier(uint8_t ds_id, EvacNotifier notifier);
   void register_copy_notifier(uint8_t ds_id, CopyNotifier notifier);
   void read_object(uint8_t ds_id, uint8_t obj_id_len, const uint8_t *obj_id,
