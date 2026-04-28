@@ -104,6 +104,19 @@ FORCE_INLINE Stack<T> FarMemManager::allocate_stack(const DerefScope &scope) {
   return Stack<T>(scope);
 }
 
+// TREESET: BEGIN CHANGES
+template <typename T>
+FORCE_INLINE TreeSet<T> FarMemManager::allocate_treeset() {
+  return TreeSet<T>(allocate_ds_id());
+}
+
+template <typename T>
+FORCE_INLINE TreeSet<T> *FarMemManager::allocate_treeset_heap() {
+  return new TreeSet<T>(allocate_ds_id());
+}
+
+// TREESET: END CHANGES
+
 template <typename T, uint64_t MaxN>
 FORCE_INLINE Heap<T, MaxN> FarMemManager::allocate_heap() {
   return Heap<T, MaxN>(this);

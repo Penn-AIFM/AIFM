@@ -1,0 +1,43 @@
+{
+  "runs": [
+    {
+      "n": 500,
+      "std_set_insert_us": 120,
+      "std_set_lookup_us": 80,
+      "bplus_insert_us": 900,
+      "bplus_lookup_us": 400,
+      "bplus_range_us": 50,
+      "bplus_page_loads_after_insert": 12000,
+      "bplus_page_loads_lookup": 2800,
+      "bplus_page_loads_range": 100,
+      "rb_insert_us": 2500,
+      "rb_lookup_us": 1800
+    },
+    {
+      "n": 2000,
+      "std_set_insert_us": 600,
+      "std_set_lookup_us": 320,
+      "bplus_insert_us": 2800,
+      "bplus_lookup_us": 1100,
+      "bplus_range_us": 220,
+      "bplus_page_loads_after_insert": 32000,
+      "bplus_page_loads_lookup": 9000,
+      "bplus_page_loads_range": 260,
+      "rb_insert_us": 12000,
+      "rb_lookup_us": 7800
+    },
+    {
+      "n": 8000,
+      "std_set_insert_us": 3200,
+      "std_set_lookup_us": 1300,
+      "bplus_insert_us": 9500,
+      "bplus_lookup_us": 3900,
+      "bplus_range_us": 900,
+      "bplus_page_loads_after_insert": 88000,
+      "bplus_page_loads_lookup": 28000,
+      "bplus_page_loads_range": 950,
+      "rb_insert_us": 58000,
+      "rb_lookup_us": 34000
+    }
+  ]
+}

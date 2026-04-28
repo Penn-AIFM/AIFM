@@ -20,6 +20,8 @@ constexpr static uint8_t kHashTableDSType = 1;
 // DataFrameVector.
 constexpr static uint8_t kDataFrameVectorDSType = 2;
 
+// TreeSet.
+constexpr static uint8_t kTreeSetDSType = 3;
 // Bitmap.
 constexpr static uint8_t kBitmapDSType = 3;
 
