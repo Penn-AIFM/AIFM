@@ -1,106 +1,246 @@
 #pragma once
 
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <limits>
+#include <mutex>
+#include <utility>
+#include <vector>
 
 namespace far_memory {
 
-// ============================================================================
-// GenericIteratorImpl
-// ============================================================================
+namespace {
+
+struct TreeReadLock {
+  std::shared_lock<std::shared_mutex> lock_;
+  TreeReadLock(std::shared_mutex &m, bool enable) : lock_(m, std::defer_lock) {
+    if (enable) {
+      lock_.lock();
+    }
+  }
+};
+
+struct TreeWriteLock {
+  std::unique_lock<std::shared_mutex> lock_;
+  TreeWriteLock(std::shared_mutex &m, bool enable) : lock_(m, std::defer_lock) {
+    if (enable) {
+      lock_.lock();
+    }
+  }
+};
+
+// Software prefetch: ptr_addr is the in-memory address of a GenericUniquePtr
+// (same encoding as page_deref). Warming the handle before the next deref() can
+// hide cache latency. No-op for null. Define AIFM_TREESET_NO_PREFETCH to
+// disable (e.g. A/B on odd architectures).
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(AIFM_TREESET_NO_PREFETCH)
+#define AIFM_TREESET_HAS_PREFETCH 1
+#endif
+
+#if AIFM_TREESET_HAS_PREFETCH
+inline void prefetch_unique_ptr_handle(uint64_t ptr_addr) {
+  if (ptr_addr == 0) {
+    return;
+  }
+  const void *p =
+      reinterpret_cast<const void *>(static_cast<uintptr_t>(ptr_addr));
+  __builtin_prefetch(p, 0, 3);
+}
+#else
+inline void prefetch_unique_ptr_handle(uint64_t) {}
+#endif
+
+} // namespace
+
+// -----------------------------------------------------------------------------
+// Iterator
+// -----------------------------------------------------------------------------
 
 template <bool Reverse>
 FORCE_INLINE GenericTreeSet::GenericIteratorImpl<Reverse>::GenericIteratorImpl()
-    : current_addr_(TreeNode::kNullAddr), tree_(nullptr) {}
+    : leaf_addr_(kNull), key_idx_(-1), tree_(nullptr) {}
 
 template <bool Reverse>
 FORCE_INLINE GenericTreeSet::GenericIteratorImpl<Reverse>::GenericIteratorImpl(
-    uint64_t addr, GenericTreeSet *tree)
-    : current_addr_(addr), tree_(tree) {}
+    uint64_t leaf, int32_t idx, GenericTreeSet *t)
+    : leaf_addr_(leaf), key_idx_(idx), tree_(t) {}
 
 template <bool Reverse>
 FORCE_INLINE GenericTreeSet::GenericIteratorImpl<Reverse>::GenericIteratorImpl(
     const GenericIteratorImpl &o)
-    : current_addr_(o.current_addr_), tree_(o.tree_) {}
+    : leaf_addr_(o.leaf_addr_), key_idx_(o.key_idx_), tree_(o.tree_) {}
 
 template <bool Reverse>
 FORCE_INLINE GenericTreeSet::GenericIteratorImpl<Reverse> &
 GenericTreeSet::GenericIteratorImpl<Reverse>::operator=(
     const GenericIteratorImpl &o) {
-  current_addr_ = o.current_addr_;
+  leaf_addr_ = o.leaf_addr_;
+  key_idx_ = o.key_idx_;
   tree_ = o.tree_;
   return *this;
 }
 
 template <bool Reverse>
-FORCE_INLINE void
-GenericTreeSet::GenericIteratorImpl<Reverse>::inc(const DerefScope &scope) {
-  if (current_addr_ == TreeNode::kNullAddr) {
+FORCE_INLINE void GenericTreeSet::GenericIteratorImpl<Reverse>::inc(
+    const DerefScope &scope) {
+  if (leaf_addr_ == kNull || key_idx_ < 0) {
     return;
   }
-  if constexpr (Reverse) {
-    current_addr_ = tree_->find_predecessor(scope, current_addr_);
+  if constexpr (!Reverse) {
+    uint8_t *base = const_cast<uint8_t *>(
+        tree_->page_deref(scope, leaf_addr_));
+    const BPlusPageHdr *h = tree_->hdr(base);
+    if (key_idx_ + 1 < static_cast<int32_t>(h->num_keys)) {
+      key_idx_++;
+      return;
+    }
+    uint64_t nxt = h->next_leaf;
+    if (nxt == kNull) {
+      leaf_addr_ = kNull;
+      key_idx_ = -1;
+    } else {
+      prefetch_unique_ptr_handle(nxt);
+      leaf_addr_ = nxt;
+      key_idx_ = 0;
+    }
   } else {
-    current_addr_ = tree_->find_successor(scope, current_addr_);
+    if (key_idx_ > 0) {
+      key_idx_--;
+      return;
+    }
+    uint8_t *base = const_cast<uint8_t *>(
+        tree_->page_deref(scope, leaf_addr_));
+    const BPlusPageHdr *h = tree_->hdr(base);
+    uint64_t prv = h->prev_leaf;
+    if (prv == kNull) {
+      leaf_addr_ = kNull;
+      key_idx_ = -1;
+    } else {
+      prefetch_unique_ptr_handle(prv);
+      leaf_addr_ = prv;
+      uint8_t *pb =
+          const_cast<uint8_t *>(tree_->page_deref(scope, leaf_addr_));
+      key_idx_ = static_cast<int32_t>(tree_->hdr(pb)->num_keys) - 1;
+    }
   }
 }
 
 template <bool Reverse>
-FORCE_INLINE void
-GenericTreeSet::GenericIteratorImpl<Reverse>::dec(const DerefScope &scope) {
-  if constexpr (Reverse) {
-    current_addr_ = tree_->find_successor(scope, current_addr_);
+FORCE_INLINE void GenericTreeSet::GenericIteratorImpl<Reverse>::dec(
+    const DerefScope &scope) {
+  if constexpr (!Reverse) {
+    if (leaf_addr_ == kNull && key_idx_ < 0) {
+      return;
+    }
+    if (leaf_addr_ != kNull && key_idx_ > 0) {
+      key_idx_--;
+      return;
+    }
+    if (leaf_addr_ != kNull && key_idx_ == 0) {
+      uint8_t *base = const_cast<uint8_t *>(
+          tree_->page_deref(scope, leaf_addr_));
+      uint64_t prv = tree_->hdr(base)->prev_leaf;
+      if (prv == kNull) {
+        return;
+      }
+      prefetch_unique_ptr_handle(prv);
+      leaf_addr_ = prv;
+      base = const_cast<uint8_t *>(tree_->page_deref(scope, leaf_addr_));
+      key_idx_ = static_cast<int32_t>(tree_->hdr(base)->num_keys) - 1;
+    }
   } else {
-    current_addr_ = tree_->find_predecessor(scope, current_addr_);
+    uint8_t *base = const_cast<uint8_t *>(
+        tree_->page_deref(scope, leaf_addr_));
+    const BPlusPageHdr *h = tree_->hdr(base);
+    if (key_idx_ + 1 < static_cast<int32_t>(h->num_keys)) {
+      key_idx_++;
+      return;
+    }
+    uint64_t nxt = h->next_leaf;
+    if (nxt == kNull) {
+      leaf_addr_ = kNull;
+      key_idx_ = -1;
+    } else {
+      prefetch_unique_ptr_handle(nxt);
+      leaf_addr_ = nxt;
+      key_idx_ = 0;
+    }
   }
 }
 
 template <bool Reverse>
 FORCE_INLINE bool GenericTreeSet::GenericIteratorImpl<Reverse>::operator==(
     const GenericIteratorImpl &o) const {
-  return current_addr_ == o.current_addr_;
+  return leaf_addr_ == o.leaf_addr_ && key_idx_ == o.key_idx_;
 }
 
 template <bool Reverse>
 FORCE_INLINE bool GenericTreeSet::GenericIteratorImpl<Reverse>::operator!=(
     const GenericIteratorImpl &o) const {
-  return current_addr_ != o.current_addr_;
+  return !(*this == o);
 }
 
 template <bool Reverse>
 FORCE_INLINE const uint8_t *
-GenericTreeSet::GenericIteratorImpl<Reverse>::deref(
-    const DerefScope &scope) const {
-  if (current_addr_ == TreeNode::kNullAddr) {
+GenericTreeSet::GenericIteratorImpl<Reverse>::deref(const DerefScope &scope) const {
+  if (leaf_addr_ == kNull || key_idx_ < 0) {
     return nullptr;
   }
-  TreeNode *node = tree_->get_node(scope, current_addr_);
-  return node->data;
+  const uint8_t *base = tree_->page_deref(scope, leaf_addr_);
+  return tree_->leaf_key_ptr(base, static_cast<uint16_t>(key_idx_));
 }
 
 template <bool Reverse>
 FORCE_INLINE uint8_t *
-GenericTreeSet::GenericIteratorImpl<Reverse>::deref_mut(
-    const DerefScope &scope) {
-  if (current_addr_ == TreeNode::kNullAddr) {
+GenericTreeSet::GenericIteratorImpl<Reverse>::deref_mut(const DerefScope &scope) {
+  if (leaf_addr_ == kNull || key_idx_ < 0) {
     return nullptr;
   }
-  TreeNode *node = tree_->get_node_mut(scope, current_addr_);
-  return node->data;
+  uint8_t *base = tree_->page_deref_mut(scope, leaf_addr_);
+  return tree_->leaf_key_ptr(base, static_cast<uint16_t>(key_idx_));
 }
 
 template <bool Reverse>
 FORCE_INLINE bool
 GenericTreeSet::GenericIteratorImpl<Reverse>::is_end() const {
-  return current_addr_ == TreeNode::kNullAddr;
+  return leaf_addr_ == kNull || key_idx_ < 0;
 }
 
-// ============================================================================
-// GenericTreeSet
-// ============================================================================
+// -----------------------------------------------------------------------------
+// GenericTreeSet basics
+// -----------------------------------------------------------------------------
 
 FORCE_INLINE GenericTreeSet::GenericTreeSet(uint16_t item_size, uint8_t ds_id)
-    : item_size_(item_size), root_addr_(TreeNode::kNullAddr), size_(0),
-      ds_id_(ds_id) {}
+    : item_size_(item_size), leaf_cap_(2), internal_cap_(2), min_leaf_keys_(1),
+      root_addr_(kNull), size_(0), ds_id_(ds_id) {
+  size_t maxd = Object::kMaxObjectDataSize;
+  if (sizeof(BPlusPageHdr) >= maxd) {
+    assert(false && "item too large for B+ tree page");
+  }
+  size_t leaf_fit =
+      (maxd - sizeof(BPlusPageHdr)) / static_cast<size_t>(item_size_);
+  if (leaf_fit < 2) {
+    leaf_fit = 2;
+  }
+  leaf_cap_ = static_cast<uint16_t>(
+      std::min(leaf_fit, static_cast<size_t>(std::numeric_limits<uint16_t>::max())));
+
+  if (maxd >= sizeof(BPlusPageHdr) + 8) {
+    size_t room = maxd - sizeof(BPlusPageHdr) - 8;
+    size_t denom = static_cast<size_t>(item_size_) + 8u;
+    size_t int_fit = denom ? room / denom : 0;
+    if (int_fit < 2) {
+      int_fit = 2;
+    }
+    internal_cap_ = static_cast<uint16_t>(
+        std::min(int_fit, static_cast<size_t>(std::numeric_limits<uint16_t>::max())));
+  }
+  min_leaf_keys_ = static_cast<uint16_t>((static_cast<unsigned>(leaf_cap_) + 1u) / 2u);
+  if (min_leaf_keys_ == 0) {
+    min_leaf_keys_ = 1;
+  }
+}
 
 FORCE_INLINE GenericTreeSet::~GenericTreeSet() {
   if (size_ > 0) {
@@ -115,639 +255,812 @@ FORCE_INLINE GenericTreeSet::~GenericTreeSet() {
   }
 }
 
-FORCE_INLINE GenericTreeSet::TreeNode *
-GenericTreeSet::get_node(const DerefScope &scope, uint64_t addr) const {
-  if (addr == TreeNode::kNullAddr) {
+FORCE_INLINE const uint8_t *
+GenericTreeSet::page_deref(const DerefScope &scope, uint64_t ptr_addr) const {
+  if (ptr_addr == kNull) {
     return nullptr;
   }
-  auto *ptr = reinterpret_cast<GenericUniquePtr *>(addr);
-  return reinterpret_cast<TreeNode *>(const_cast<void *>(ptr->deref(scope)));
+  auto *ptr = reinterpret_cast<GenericUniquePtr *>(ptr_addr);
+  if (track_page_loads_) {
+    page_loads_.fetch_add(1, std::memory_order_relaxed);
+  }
+  return reinterpret_cast<const uint8_t *>(ptr->deref(scope));
 }
 
-FORCE_INLINE GenericTreeSet::TreeNode *
-GenericTreeSet::get_node_mut(const DerefScope &scope, uint64_t addr) {
-  if (addr == TreeNode::kNullAddr) {
+FORCE_INLINE uint8_t *
+GenericTreeSet::page_deref_mut(const DerefScope &scope, uint64_t ptr_addr) {
+  if (ptr_addr == kNull) {
     return nullptr;
   }
-  auto *ptr = reinterpret_cast<GenericUniquePtr *>(addr);
-  return reinterpret_cast<TreeNode *>(ptr->deref_mut(scope));
+  auto *ptr = reinterpret_cast<GenericUniquePtr *>(ptr_addr);
+  if (track_page_loads_) {
+    page_loads_.fetch_add(1, std::memory_order_relaxed);
+  }
+  return reinterpret_cast<uint8_t *>(ptr->deref_mut(scope));
+}
+
+FORCE_INLINE void GenericTreeSet::init_hdr(uint8_t *base, bool is_leaf,
+                                           uint64_t parent_ptr,
+                                           uint16_t idx_in_parent) {
+  BPlusPageHdr *h = hdr_mut(base);
+  h->magic = BPlusPageHdr::kMagic;
+  h->num_keys = 0;
+  h->index_in_parent = idx_in_parent;
+  h->is_leaf = is_leaf ? 1 : 0;
+  h->reserved = 0;
+  h->parent_ptr = parent_ptr;
+  h->next_leaf = kNull;
+  h->prev_leaf = kNull;
 }
 
 FORCE_INLINE uint64_t
-GenericTreeSet::allocate_node(const DerefScope &scope) {
+GenericTreeSet::allocate_page_raw(const DerefScope &scope, uint16_t bytes) {
   auto *manager = FarMemManagerFactory::get();
-  uint16_t node_size = kNodeHeaderSize + item_size_;
-
-  // Allocate space for the UniquePtr on the heap
   auto *ptr = new GenericUniquePtr();
-  bool success = manager->allocate_generic_unique_ptr_nb(ptr, ds_id_, node_size);
-  if (!success) {
-    // Blocking allocation
-    *ptr = manager->allocate_generic_unique_ptr(ds_id_, node_size);
+  bool ok = manager->allocate_generic_unique_ptr_nb(ptr, ds_id_, bytes);
+  if (!ok) {
+    *ptr = manager->allocate_generic_unique_ptr(ds_id_, bytes);
   }
-
-  // Initialize the node
-  TreeNode *node = reinterpret_cast<TreeNode *>(ptr->deref_mut(scope));
-  node->color = RBColor::Red;
-  node->left_addr = TreeNode::kNullAddr;
-  node->right_addr = TreeNode::kNullAddr;
-  node->parent_addr = TreeNode::kNullAddr;
-
   return reinterpret_cast<uint64_t>(ptr);
 }
 
-FORCE_INLINE void GenericTreeSet::free_node(uint64_t addr) {
-  if (addr == TreeNode::kNullAddr) {
+FORCE_INLINE void GenericTreeSet::free_page_raw(uint64_t ptr_addr) {
+  if (ptr_addr == kNull) {
     return;
   }
-  auto *ptr = reinterpret_cast<GenericUniquePtr *>(addr);
+  auto *ptr = reinterpret_cast<GenericUniquePtr *>(ptr_addr);
   ptr->free();
   delete ptr;
 }
 
-FORCE_INLINE uint64_t GenericTreeSet::find_minimum(const DerefScope &scope,
-                                                    uint64_t addr) const {
-  if (addr == TreeNode::kNullAddr) {
-    return TreeNode::kNullAddr;
-  }
-  TreeNode *node = get_node(scope, addr);
-  while (node->has_left()) {
-    addr = node->left_addr;
-    node = get_node(scope, addr);
-  }
-  return addr;
-}
-
-FORCE_INLINE uint64_t GenericTreeSet::find_maximum(const DerefScope &scope,
-                                                    uint64_t addr) const {
-  if (addr == TreeNode::kNullAddr) {
-    return TreeNode::kNullAddr;
-  }
-  TreeNode *node = get_node(scope, addr);
-  while (node->has_right()) {
-    addr = node->right_addr;
-    node = get_node(scope, addr);
-  }
-  return addr;
-}
-
-FORCE_INLINE uint64_t GenericTreeSet::find_successor(const DerefScope &scope,
-                                                      uint64_t addr) const {
-  if (addr == TreeNode::kNullAddr) {
-    return TreeNode::kNullAddr;
-  }
-
-  TreeNode *node = get_node(scope, addr);
-
-  // If right subtree exists, successor is minimum of right subtree
-  if (node->has_right()) {
-    return find_minimum(scope, node->right_addr);
-  }
-
-  // Otherwise, go up until we find an ancestor that is a left child
-  uint64_t parent_addr = node->parent_addr;
-  while (parent_addr != TreeNode::kNullAddr) {
-    TreeNode *parent = get_node(scope, parent_addr);
-    if (parent->left_addr == addr) {
-      return parent_addr;
-    }
-    addr = parent_addr;
-    parent_addr = parent->parent_addr;
-  }
-
-  return TreeNode::kNullAddr; // No successor (this was the maximum)
-}
-
-FORCE_INLINE uint64_t GenericTreeSet::find_predecessor(const DerefScope &scope,
-                                                        uint64_t addr) const {
-  if (addr == TreeNode::kNullAddr) {
-    return TreeNode::kNullAddr;
-  }
-
-  TreeNode *node = get_node(scope, addr);
-
-  // If left subtree exists, predecessor is maximum of left subtree
-  if (node->has_left()) {
-    return find_maximum(scope, node->left_addr);
-  }
-
-  // Otherwise, go up until we find an ancestor that is a right child
-  uint64_t parent_addr = node->parent_addr;
-  while (parent_addr != TreeNode::kNullAddr) {
-    TreeNode *parent = get_node(scope, parent_addr);
-    if (parent->right_addr == addr) {
-      return parent_addr;
-    }
-    addr = parent_addr;
-    parent_addr = parent->parent_addr;
-  }
-
-  return TreeNode::kNullAddr; // No predecessor (this was the minimum)
-}
-
-FORCE_INLINE void GenericTreeSet::rotate_left(const DerefScope &scope,
-                                               uint64_t x_addr) {
-  TreeNode *x = get_node_mut(scope, x_addr);
-  uint64_t y_addr = x->right_addr;
-  TreeNode *y = get_node_mut(scope, y_addr);
-
-  // Turn y's left subtree into x's right subtree
-  x->right_addr = y->left_addr;
-  if (y->has_left()) {
-    TreeNode *y_left = get_node_mut(scope, y->left_addr);
-    y_left->parent_addr = x_addr;
-  }
-
-  // Link x's parent to y
-  y->parent_addr = x->parent_addr;
-  if (!x->has_parent()) {
-    root_addr_ = y_addr;
-  } else {
-    TreeNode *x_parent = get_node_mut(scope, x->parent_addr);
-    if (x_parent->left_addr == x_addr) {
-      x_parent->left_addr = y_addr;
+FORCE_INLINE uint16_t
+GenericTreeSet::leaf_lower_bound(const uint8_t *base, const uint8_t *key) const {
+  const BPlusPageHdr *h = hdr(base);
+  uint16_t lo = 0, hi = h->num_keys;
+  while (lo < hi) {
+    uint16_t mid = static_cast<uint16_t>((lo + hi) / 2);
+    int c = cmp_key(key, leaf_key_ptr(base, mid));
+    if (c <= 0) {
+      hi = mid;
     } else {
-      x_parent->right_addr = y_addr;
+      lo = static_cast<uint16_t>(mid + 1);
     }
   }
-
-  // Put x on y's left
-  y->left_addr = x_addr;
-  x->parent_addr = y_addr;
+  return lo;
 }
 
-FORCE_INLINE void GenericTreeSet::rotate_right(const DerefScope &scope,
-                                                uint64_t x_addr) {
-  TreeNode *x = get_node_mut(scope, x_addr);
-  uint64_t y_addr = x->left_addr;
-  TreeNode *y = get_node_mut(scope, y_addr);
-
-  // Turn y's right subtree into x's left subtree
-  x->left_addr = y->right_addr;
-  if (y->has_right()) {
-    TreeNode *y_right = get_node_mut(scope, y->right_addr);
-    y_right->parent_addr = x_addr;
-  }
-
-  // Link x's parent to y
-  y->parent_addr = x->parent_addr;
-  if (!x->has_parent()) {
-    root_addr_ = y_addr;
-  } else {
-    TreeNode *x_parent = get_node_mut(scope, x->parent_addr);
-    if (x_parent->right_addr == x_addr) {
-      x_parent->right_addr = y_addr;
+// First child index i with internal_key[i] > key (in sort order). O(log n) in keys.
+FORCE_INLINE uint16_t GenericTreeSet::internal_child_index(const uint8_t *base,
+                                                           const uint8_t *key) const {
+  const BPlusPageHdr *h = hdr(base);
+  uint16_t lo = 0, hi = h->num_keys;
+  while (lo < hi) {
+    uint16_t mid = static_cast<uint16_t>((lo + hi) / 2);
+    if (cmp_key(internal_key_ptr(base, mid), key) <= 0) {
+      lo = static_cast<uint16_t>(mid + 1);
     } else {
-      x_parent->left_addr = y_addr;
+      hi = mid;
     }
   }
-
-  // Put x on y's right
-  y->right_addr = x_addr;
-  x->parent_addr = y_addr;
+  return lo;
 }
 
-FORCE_INLINE void GenericTreeSet::insert_fixup(const DerefScope &scope,
-                                                uint64_t z_addr) {
-  while (true) {
-    TreeNode *z = get_node_mut(scope, z_addr);
-    if (!z->has_parent()) {
-      break;
-    }
-
-    TreeNode *z_parent = get_node(scope, z->parent_addr);
-    if (z_parent->is_black()) {
-      break;
-    }
-
-    uint64_t z_parent_addr = z->parent_addr;
-    if (!z_parent->has_parent()) {
-      break;
-    }
-
-    TreeNode *z_grandparent = get_node(scope, z_parent->parent_addr);
-    uint64_t z_grandparent_addr = z_parent->parent_addr;
-
-    if (z_parent_addr == z_grandparent->left_addr) {
-      // Parent is left child of grandparent
-      uint64_t y_addr = z_grandparent->right_addr; // Uncle
-      TreeNode *y = (y_addr != TreeNode::kNullAddr) ? get_node_mut(scope, y_addr) : nullptr;
-
-      if (y != nullptr && y->is_red()) {
-        // Case 1: Uncle is red
-        TreeNode *z_parent_mut = get_node_mut(scope, z_parent_addr);
-        z_parent_mut->color = RBColor::Black;
-        y->color = RBColor::Black;
-        TreeNode *z_grandparent_mut = get_node_mut(scope, z_grandparent_addr);
-        z_grandparent_mut->color = RBColor::Red;
-        z_addr = z_grandparent_addr;
-      } else {
-        if (z_addr == z_parent->right_addr) {
-          // Case 2: z is right child
-          z_addr = z_parent_addr;
-          rotate_left(scope, z_addr);
-          z = get_node_mut(scope, z_addr);
-          z_parent_addr = z->parent_addr;
-        }
-        // Case 3: z is left child
-        TreeNode *z_parent_mut = get_node_mut(scope, z_parent_addr);
-        z_parent_mut->color = RBColor::Black;
-        TreeNode *z_grandparent_mut = get_node_mut(scope, z_grandparent_addr);
-        z_grandparent_mut->color = RBColor::Red;
-        rotate_right(scope, z_grandparent_addr);
-      }
+// First pos where cmp(sep_key, internal_key[pos]) <= 0, else num_keys.
+FORCE_INLINE uint16_t
+GenericTreeSet::internal_insert_pos(const uint8_t *base, const uint8_t *sep_key) const {
+  const BPlusPageHdr *h = hdr(base);
+  uint16_t lo = 0, hi = h->num_keys;
+  while (lo < hi) {
+    uint16_t mid = static_cast<uint16_t>((lo + hi) / 2);
+    if (cmp_key(sep_key, internal_key_ptr(base, mid)) > 0) {
+      lo = static_cast<uint16_t>(mid + 1);
     } else {
-      // Parent is right child of grandparent (symmetric case)
-      uint64_t y_addr = z_grandparent->left_addr; // Uncle
-      TreeNode *y = (y_addr != TreeNode::kNullAddr) ? get_node_mut(scope, y_addr) : nullptr;
-
-      if (y != nullptr && y->is_red()) {
-        // Case 1: Uncle is red
-        TreeNode *z_parent_mut = get_node_mut(scope, z_parent_addr);
-        z_parent_mut->color = RBColor::Black;
-        y->color = RBColor::Black;
-        TreeNode *z_grandparent_mut = get_node_mut(scope, z_grandparent_addr);
-        z_grandparent_mut->color = RBColor::Red;
-        z_addr = z_grandparent_addr;
-      } else {
-        if (z_addr == z_parent->left_addr) {
-          // Case 2: z is left child
-          z_addr = z_parent_addr;
-          rotate_right(scope, z_addr);
-          z = get_node_mut(scope, z_addr);
-          z_parent_addr = z->parent_addr;
-        }
-        // Case 3: z is right child
-        TreeNode *z_parent_mut = get_node_mut(scope, z_parent_addr);
-        z_parent_mut->color = RBColor::Black;
-        TreeNode *z_grandparent_mut = get_node_mut(scope, z_grandparent_addr);
-        z_grandparent_mut->color = RBColor::Red;
-        rotate_left(scope, z_grandparent_addr);
-      }
+      hi = mid;
     }
   }
-
-  // Root must be black
-  if (root_addr_ != TreeNode::kNullAddr) {
-    TreeNode *root = get_node_mut(scope, root_addr_);
-    root->color = RBColor::Black;
-  }
+  return lo;
 }
 
-FORCE_INLINE void GenericTreeSet::transplant(const DerefScope &scope,
-                                              uint64_t u_addr, uint64_t v_addr) {
-  TreeNode *u = get_node_mut(scope, u_addr);
-
-  if (!u->has_parent()) {
-    root_addr_ = v_addr;
-  } else {
-    TreeNode *u_parent = get_node_mut(scope, u->parent_addr);
-    if (u_parent->left_addr == u_addr) {
-      u_parent->left_addr = v_addr;
-    } else {
-      u_parent->right_addr = v_addr;
+FORCE_INLINE uint64_t
+GenericTreeSet::leftmost_leaf(const DerefScope &scope, uint64_t node_addr) const {
+  uint64_t cur = node_addr;
+  for (;;) {
+    const uint8_t *base = page_deref(scope, cur);
+    const BPlusPageHdr *h = hdr(base);
+    if (h->is_leaf) {
+      return cur;
     }
-  }
-
-  if (v_addr != TreeNode::kNullAddr) {
-    TreeNode *v = get_node_mut(scope, v_addr);
-    v->parent_addr = u->parent_addr;
+    const uint64_t nxt = *internal_child_ptr(const_cast<uint8_t *>(base), 0);
+    prefetch_unique_ptr_handle(nxt);
+    cur = nxt;
   }
 }
 
-FORCE_INLINE void GenericTreeSet::remove_fixup(const DerefScope &scope,
-                                                uint64_t x_addr,
-                                                uint64_t x_parent_addr) {
-  while (x_addr != root_addr_) {
-    TreeNode *x = (x_addr != TreeNode::kNullAddr) ? get_node(scope, x_addr) : nullptr;
-    if (x != nullptr && x->is_red()) {
-      break;
+FORCE_INLINE uint64_t
+GenericTreeSet::rightmost_leaf(const DerefScope &scope, uint64_t node_addr) const {
+  uint64_t cur = node_addr;
+  for (;;) {
+    const uint8_t *base = page_deref(scope, cur);
+    const BPlusPageHdr *h = hdr(base);
+    if (h->is_leaf) {
+      return cur;
     }
-
-    TreeNode *x_parent = get_node_mut(scope, x_parent_addr);
-
-    if (x_addr == x_parent->left_addr) {
-      uint64_t w_addr = x_parent->right_addr;
-      TreeNode *w = get_node_mut(scope, w_addr);
-
-      if (w->is_red()) {
-        // Case 1
-        w->color = RBColor::Black;
-        x_parent->color = RBColor::Red;
-        rotate_left(scope, x_parent_addr);
-        x_parent = get_node_mut(scope, x_parent_addr);
-        w_addr = x_parent->right_addr;
-        w = get_node_mut(scope, w_addr);
-      }
-
-      TreeNode *w_left = (w->has_left()) ? get_node(scope, w->left_addr) : nullptr;
-      TreeNode *w_right = (w->has_right()) ? get_node(scope, w->right_addr) : nullptr;
-      bool w_left_black = (w_left == nullptr || w_left->is_black());
-      bool w_right_black = (w_right == nullptr || w_right->is_black());
-
-      if (w_left_black && w_right_black) {
-        // Case 2
-        w->color = RBColor::Red;
-        x_addr = x_parent_addr;
-        TreeNode *x_new = get_node(scope, x_addr);
-        x_parent_addr = x_new->parent_addr;
-      } else {
-        if (w_right_black) {
-          // Case 3
-          if (w_left != nullptr) {
-            TreeNode *w_left_mut = get_node_mut(scope, w->left_addr);
-            w_left_mut->color = RBColor::Black;
-          }
-          w->color = RBColor::Red;
-          rotate_right(scope, w_addr);
-          x_parent = get_node_mut(scope, x_parent_addr);
-          w_addr = x_parent->right_addr;
-          w = get_node_mut(scope, w_addr);
-        }
-        // Case 4
-        w->color = x_parent->color;
-        x_parent->color = RBColor::Black;
-        if (w->has_right()) {
-          TreeNode *w_right_mut = get_node_mut(scope, w->right_addr);
-          w_right_mut->color = RBColor::Black;
-        }
-        rotate_left(scope, x_parent_addr);
-        x_addr = root_addr_;
-        break;
-      }
-    } else {
-      // Symmetric case
-      uint64_t w_addr = x_parent->left_addr;
-      TreeNode *w = get_node_mut(scope, w_addr);
-
-      if (w->is_red()) {
-        // Case 1
-        w->color = RBColor::Black;
-        x_parent->color = RBColor::Red;
-        rotate_right(scope, x_parent_addr);
-        x_parent = get_node_mut(scope, x_parent_addr);
-        w_addr = x_parent->left_addr;
-        w = get_node_mut(scope, w_addr);
-      }
-
-      TreeNode *w_left = (w->has_left()) ? get_node(scope, w->left_addr) : nullptr;
-      TreeNode *w_right = (w->has_right()) ? get_node(scope, w->right_addr) : nullptr;
-      bool w_left_black = (w_left == nullptr || w_left->is_black());
-      bool w_right_black = (w_right == nullptr || w_right->is_black());
-
-      if (w_left_black && w_right_black) {
-        // Case 2
-        w->color = RBColor::Red;
-        x_addr = x_parent_addr;
-        TreeNode *x_new = get_node(scope, x_addr);
-        x_parent_addr = x_new->parent_addr;
-      } else {
-        if (w_left_black) {
-          // Case 3
-          if (w_right != nullptr) {
-            TreeNode *w_right_mut = get_node_mut(scope, w->right_addr);
-            w_right_mut->color = RBColor::Black;
-          }
-          w->color = RBColor::Red;
-          rotate_left(scope, w_addr);
-          x_parent = get_node_mut(scope, x_parent_addr);
-          w_addr = x_parent->left_addr;
-          w = get_node_mut(scope, w_addr);
-        }
-        // Case 4
-        w->color = x_parent->color;
-        x_parent->color = RBColor::Black;
-        if (w->has_left()) {
-          TreeNode *w_left_mut = get_node_mut(scope, w->left_addr);
-          w_left_mut->color = RBColor::Black;
-        }
-        rotate_right(scope, x_parent_addr);
-        x_addr = root_addr_;
-        break;
-      }
-    }
-  }
-
-  if (x_addr != TreeNode::kNullAddr) {
-    TreeNode *x = get_node_mut(scope, x_addr);
-    x->color = RBColor::Black;
+    const uint64_t nxt = *internal_child_ptr(const_cast<uint8_t *>(base), h->num_keys);
+    prefetch_unique_ptr_handle(nxt);
+    cur = nxt;
   }
 }
 
-FORCE_INLINE uint64_t GenericTreeSet::find_node(const DerefScope &scope,
-                                                 const uint8_t *key) const {
-  uint64_t current = root_addr_;
-  while (current != TreeNode::kNullAddr) {
-    TreeNode *node = get_node(scope, current);
-    int cmp = compare_fn_(key, node->data);
-    if (cmp == 0) {
-      return current;
-    } else if (cmp < 0) {
-      current = node->left_addr;
-    } else {
-      current = node->right_addr;
-    }
-  }
-  return TreeNode::kNullAddr;
+// --- insert helpers -----------------------------------------------------------
+
+namespace {
+
+FORCE_INLINE void memcpy_keys(uint8_t *dst, const uint8_t *src, size_t n,
+                              uint16_t item_size) {
+  memcpy(dst, src, n * static_cast<size_t>(item_size));
 }
 
-FORCE_INLINE GenericTreeSet::GenericIterator
-GenericTreeSet::begin(const DerefScope &scope) const {
-  uint64_t min_addr = find_minimum(scope, root_addr_);
-  return GenericIterator(min_addr, const_cast<GenericTreeSet *>(this));
-}
+} // namespace
 
-FORCE_INLINE GenericTreeSet::GenericIterator
-GenericTreeSet::end(const DerefScope &scope) const {
-  return GenericIterator(TreeNode::kNullAddr, const_cast<GenericTreeSet *>(this));
-}
-
-FORCE_INLINE GenericTreeSet::ReverseGenericIterator
-GenericTreeSet::rbegin(const DerefScope &scope) const {
-  uint64_t max_addr = find_maximum(scope, root_addr_);
-  return ReverseGenericIterator(max_addr, const_cast<GenericTreeSet *>(this));
-}
-
-FORCE_INLINE GenericTreeSet::ReverseGenericIterator
-GenericTreeSet::rend(const DerefScope &scope) const {
-  return ReverseGenericIterator(TreeNode::kNullAddr, const_cast<GenericTreeSet *>(this));
-}
-
-FORCE_INLINE bool GenericTreeSet::insert(const DerefScope &scope,
-                                          const uint8_t *data) {
-  // First check if key already exists
-  if (find_node(scope, data) != TreeNode::kNullAddr) {
-    return false; // Duplicate key
+FORCE_INLINE bool GenericTreeSet::leaf_insert_full(
+    const DerefScope &scope, uint64_t leaf_addr, const uint8_t *key, bool *split,
+    uint64_t *new_right_out, uint8_t *sep_key_out) {
+  *split = false;
+  uint8_t *base = page_deref_mut(scope, leaf_addr);
+  BPlusPageHdr *hp = hdr_mut(base);
+  uint16_t pos = leaf_lower_bound(base, key);
+  if (pos < hp->num_keys &&
+      cmp_key(key, leaf_key_ptr(base, pos)) == 0) {
+    return false;
   }
 
-  // Allocate new node
-  uint64_t z_addr = allocate_node(scope);
-  TreeNode *z = get_node_mut(scope, z_addr);
-  memcpy(z->data, data, item_size_);
-
-  // Standard BST insert
-  uint64_t y_addr = TreeNode::kNullAddr;
-  uint64_t x_addr = root_addr_;
-
-  while (x_addr != TreeNode::kNullAddr) {
-    y_addr = x_addr;
-    TreeNode *x = get_node(scope, x_addr);
-    int cmp = compare_fn_(data, x->data);
-    if (cmp < 0) {
-      x_addr = x->left_addr;
-    } else {
-      x_addr = x->right_addr;
-    }
+  const uint16_t n = hp->num_keys;
+  if (n < leaf_cap_) {
+    memmove(leaf_key_ptr(base, static_cast<uint16_t>(pos + 1u)),
+            leaf_key_ptr(base, pos),
+            static_cast<size_t>(n - pos) * item_size_);
+    memcpy(leaf_key_ptr(base, pos), key, item_size_);
+    hp->num_keys = static_cast<uint16_t>(n + 1u);
+    return true;
   }
 
-  z->parent_addr = y_addr;
-
-  if (y_addr == TreeNode::kNullAddr) {
-    root_addr_ = z_addr;
-  } else {
-    TreeNode *y = get_node_mut(scope, y_addr);
-    int cmp = compare_fn_(data, y->data);
-    if (cmp < 0) {
-      y->left_addr = z_addr;
-    } else {
-      y->right_addr = z_addr;
-    }
+  std::vector<uint8_t> tmp(
+      static_cast<size_t>(n + 1u) * static_cast<size_t>(item_size_));
+  for (uint16_t i = 0; i < n; ++i) {
+    memcpy(tmp.data() + static_cast<size_t>(i) * item_size_,
+           leaf_key_ptr(base, i), item_size_);
+  }
+  {
+    size_t ins = static_cast<size_t>(pos) * item_size_;
+    memmove(tmp.data() + ins + item_size_, tmp.data() + ins,
+            (n - pos) * static_cast<size_t>(item_size_));
+    memcpy(tmp.data() + ins, key, item_size_);
   }
 
-  // Fix Red-Black tree properties
-  insert_fixup(scope, z_addr);
-  size_++;
+  const uint16_t total = static_cast<uint16_t>(n + 1u);
+  uint16_t mid = static_cast<uint16_t>(total / 2);
+  uint64_t right = allocate_page_raw(scope, leaf_page_bytes());
+  uint8_t *rb = page_deref_mut(scope, right);
+  init_hdr(rb, true, hp->parent_ptr, hp->index_in_parent);
+  BPlusPageHdr *rh = hdr_mut(rb);
+
+  hp->num_keys = mid;
+  rh->num_keys = static_cast<uint16_t>(total - mid);
+  memcpy(leaf_key_ptr(base, 0), tmp.data(),
+         static_cast<size_t>(mid) * item_size_);
+  memcpy(leaf_key_ptr(rb, 0),
+         tmp.data() + static_cast<size_t>(mid) * item_size_,
+         static_cast<size_t>(rh->num_keys) * item_size_);
+
+  memcpy(sep_key_out, leaf_key_ptr(rb, 0), item_size_);
+
+  rh->next_leaf = hp->next_leaf;
+  rh->prev_leaf = leaf_addr;
+  if (hp->next_leaf != kNull) {
+    uint8_t *nxb = page_deref_mut(scope, hp->next_leaf);
+    hdr_mut(nxb)->prev_leaf = right;
+  }
+  hp->next_leaf = right;
+
+  *split = true;
+  *new_right_out = right;
   return true;
 }
 
-FORCE_INLINE bool GenericTreeSet::remove(const DerefScope &scope,
-                                          const uint8_t *data) {
-  uint64_t z_addr = find_node(scope, data);
-  if (z_addr == TreeNode::kNullAddr) {
-    return false; // Key not found
+FORCE_INLINE bool GenericTreeSet::internal_insert_full(
+    const DerefScope &scope, uint64_t node_addr, const uint8_t *sep_key,
+    uint64_t new_child, bool *split, uint64_t *new_right_out,
+    uint8_t *sep_key_out) {
+  *split = false;
+  uint8_t *base = page_deref_mut(scope, node_addr);
+  BPlusPageHdr *hp = hdr_mut(base);
+
+  const uint16_t pos = internal_insert_pos(base, sep_key);
+
+  if (hp->num_keys < internal_cap_) {
+    uint16_t k = hp->num_keys;
+    for (uint16_t i = k; i > pos; --i) {
+      memcpy(internal_key_ptr(base, i), internal_key_ptr(base, i - 1),
+             item_size_);
+    }
+    for (uint16_t i = static_cast<uint16_t>(k + 1); i > static_cast<uint16_t>(pos + 1);
+         --i) {
+      *internal_child_ptr(base, i) = *internal_child_ptr(base, i - 1);
+    }
+    memcpy(internal_key_ptr(base, pos), sep_key, item_size_);
+    *internal_child_ptr(base, pos + 1) = new_child;
+
+    hp->num_keys++;
+    for (uint16_t j = static_cast<uint16_t>(pos + 1); j <= hp->num_keys; ++j) {
+      uint64_t ca = *internal_child_ptr(base, j);
+      uint8_t *cb = page_deref_mut(scope, ca);
+      hdr_mut(cb)->parent_ptr = node_addr;
+      hdr_mut(cb)->index_in_parent = j;
+    }
+    return true;
   }
 
-  TreeNode *z = get_node_mut(scope, z_addr);
-  RBColor y_original_color = z->color;
-  uint64_t x_addr;
-  uint64_t x_parent_addr;
+  std::vector<uint8_t> keys_tmp(
+      static_cast<size_t>(internal_cap_ + 1) * item_size_);
+  std::vector<uint64_t> ch_tmp(static_cast<size_t>(internal_cap_) + 2);
+  for (uint16_t i = 0; i < hp->num_keys; ++i) {
+    memcpy(keys_tmp.data() + static_cast<size_t>(i) * item_size_,
+           internal_key_ptr(base, i), item_size_);
+  }
+  for (uint16_t i = 0; i <= hp->num_keys; ++i) {
+    ch_tmp[i] = *internal_child_ptr(base, i);
+  }
+  {
+    uint16_t old_k = hp->num_keys;
+    for (uint16_t i = old_k; i > pos; --i) {
+      memcpy(keys_tmp.data() + static_cast<size_t>(i) * item_size_,
+             keys_tmp.data() + static_cast<size_t>(i - 1) * item_size_,
+             item_size_);
+    }
+    for (uint16_t i = static_cast<uint16_t>(old_k + 1); i > static_cast<uint16_t>(pos + 1);
+         --i) {
+      ch_tmp[i] = ch_tmp[i - 1];
+    }
+    memcpy(keys_tmp.data() + static_cast<size_t>(pos) * item_size_, sep_key,
+           item_size_);
+    ch_tmp[pos + 1] = new_child;
+  }
 
-  if (!z->has_left()) {
-    x_addr = z->right_addr;
-    x_parent_addr = z->parent_addr;
-    transplant(scope, z_addr, z->right_addr);
-  } else if (!z->has_right()) {
-    x_addr = z->left_addr;
-    x_parent_addr = z->parent_addr;
-    transplant(scope, z_addr, z->left_addr);
-  } else {
-    uint64_t y_addr = find_minimum(scope, z->right_addr);
-    TreeNode *y = get_node_mut(scope, y_addr);
-    y_original_color = y->color;
-    x_addr = y->right_addr;
+  uint16_t total_keys = static_cast<uint16_t>(hp->num_keys + 1);
+  uint16_t mid_idx = total_keys / 2;
+  memcpy(sep_key_out,
+         keys_tmp.data() + static_cast<size_t>(mid_idx) * item_size_,
+         item_size_);
 
-    if (y->parent_addr == z_addr) {
-      x_parent_addr = y_addr;
-    } else {
-      x_parent_addr = y->parent_addr;
-      transplant(scope, y_addr, y->right_addr);
-      y = get_node_mut(scope, y_addr);
-      y->right_addr = z->right_addr;
-      if (z->has_right()) {
-        TreeNode *z_right = get_node_mut(scope, z->right_addr);
-        z_right->parent_addr = y_addr;
+  uint64_t right = allocate_page_raw(scope, internal_page_bytes());
+  uint8_t *rb = page_deref_mut(scope, right);
+  init_hdr(rb, false, hp->parent_ptr, hp->index_in_parent);
+  BPlusPageHdr *rh = hdr_mut(rb);
+
+  hp->num_keys = mid_idx;
+  rh->num_keys = static_cast<uint16_t>(total_keys - mid_idx - 1);
+
+  memcpy(internal_key_ptr(base, 0), keys_tmp.data(),
+         static_cast<size_t>(mid_idx) * item_size_);
+  for (uint16_t i = 0; i <= mid_idx; ++i) {
+    *internal_child_ptr(base, i) = ch_tmp[i];
+    uint8_t *cb = page_deref_mut(scope, ch_tmp[i]);
+    hdr_mut(cb)->parent_ptr = node_addr;
+    hdr_mut(cb)->index_in_parent = i;
+  }
+
+  memcpy(internal_key_ptr(rb, 0),
+         keys_tmp.data() +
+             static_cast<size_t>(mid_idx + 1) * item_size_,
+         static_cast<size_t>(rh->num_keys) * item_size_);
+  for (uint16_t i = 0; i <= rh->num_keys; ++i) {
+    *internal_child_ptr(rb, i) = ch_tmp[mid_idx + 1 + i];
+    uint8_t *cb = page_deref_mut(scope, ch_tmp[mid_idx + 1 + i]);
+    hdr_mut(cb)->parent_ptr = right;
+    hdr_mut(cb)->index_in_parent = i;
+  }
+
+  *split = true;
+  *new_right_out = right;
+  return true;
+}
+
+FORCE_INLINE bool GenericTreeSet::insert(const DerefScope &scope,
+                                         const uint8_t *data) {
+  TreeWriteLock wlk(tree_mu_, concurrent_access_);
+  if (root_addr_ == kNull) {
+    uint64_t leaf = allocate_page_raw(scope, leaf_page_bytes());
+    uint8_t *b = page_deref_mut(scope, leaf);
+    init_hdr(b, true, kNull, kRootIndex);
+    memcpy(leaf_key_ptr(b, 0), data, item_size_);
+    hdr_mut(b)->num_keys = 1;
+    root_addr_ = leaf;
+    size_++;
+    return true;
+  }
+
+  uint64_t leaf_addr = kNull;
+  {
+    uint64_t cur = root_addr_;
+    for (;;) {
+      uint8_t *cb = page_deref_mut(scope, cur);
+      BPlusPageHdr *ch = hdr_mut(cb);
+      if (ch->is_leaf) {
+        leaf_addr = cur;
+        break;
       }
+      uint16_t ci = internal_child_index(cb, data);
+      const uint64_t nxt = *internal_child_ptr(cb, ci);
+      prefetch_unique_ptr_handle(nxt);
+      cur = nxt;
     }
-
-    transplant(scope, z_addr, y_addr);
-    y = get_node_mut(scope, y_addr);
-    y->left_addr = z->left_addr;
-    if (z->has_left()) {
-      TreeNode *z_left = get_node_mut(scope, z->left_addr);
-      z_left->parent_addr = y_addr;
-    }
-    y->color = z->color;
   }
 
-  free_node(z_addr);
-  size_--;
+  bool split = false;
+  uint64_t new_right = kNull;
+  std::vector<uint8_t> sep(item_size_);
+  if (!leaf_insert_full(scope, leaf_addr, data, &split, &new_right,
+                        sep.data())) {
+    return false;
+  }
+  size_++;
 
-  if (y_original_color == RBColor::Black) {
-    remove_fixup(scope, x_addr, x_parent_addr);
+  while (split) {
+    uint8_t *lb = page_deref_mut(scope, leaf_addr);
+    BPlusPageHdr *lh = hdr_mut(lb);
+    uint64_t parent = lh->parent_ptr;
+
+    if (parent == kNull) {
+      uint64_t new_root = allocate_page_raw(scope, internal_page_bytes());
+      uint8_t *pb = page_deref_mut(scope, new_root);
+      init_hdr(pb, false, kNull, kRootIndex);
+      BPlusPageHdr *ph = hdr_mut(pb);
+      ph->num_keys = 1;
+      memcpy(internal_key_ptr(pb, 0), sep.data(), item_size_);
+      *internal_child_ptr(pb, 0) = leaf_addr;
+      *internal_child_ptr(pb, 1) = new_right;
+
+      hdr_mut(lb)->parent_ptr = new_root;
+      hdr_mut(lb)->index_in_parent = 0;
+      uint8_t *rb = page_deref_mut(scope, new_right);
+      hdr_mut(rb)->parent_ptr = new_root;
+      hdr_mut(rb)->index_in_parent = 1;
+
+      root_addr_ = new_root;
+      split = false;
+      break;
+    }
+
+    bool psplit = false;
+    uint64_t pright = kNull;
+    std::vector<uint8_t> psep(item_size_);
+    internal_insert_full(scope, parent, sep.data(), new_right, &psplit,
+                         &pright, psep.data());
+    leaf_addr = parent;
+    new_right = pright;
+    memcpy(sep.data(), psep.data(), item_size_);
+    split = psplit;
   }
 
   return true;
 }
 
 FORCE_INLINE bool GenericTreeSet::contains(const DerefScope &scope,
-                                            const uint8_t *data) const {
-  return find_node(scope, data) != TreeNode::kNullAddr;
+                                           const uint8_t *data) const {
+  TreeReadLock rlk(tree_mu_, concurrent_access_);
+  if (root_addr_ == kNull) {
+    return false;
+  }
+  uint64_t cur = root_addr_;
+  for (;;) {
+    const uint8_t *base = page_deref(scope, cur);
+    const BPlusPageHdr *h = hdr(base);
+    if (h->is_leaf) {
+      uint16_t pos = leaf_lower_bound(base, data);
+      return pos < h->num_keys &&
+             cmp_key(data, leaf_key_ptr(base, pos)) == 0;
+    }
+    const uint16_t ci = internal_child_index(base, data);
+    const uint64_t nxt = *internal_child_ptr(const_cast<uint8_t *>(base), ci);
+    prefetch_unique_ptr_handle(nxt);
+    cur = nxt;
+  }
+}
+
+FORCE_INLINE GenericTreeSet::GenericIterator
+GenericTreeSet::begin(const DerefScope &scope) const {
+  TreeReadLock rlk(tree_mu_, concurrent_access_);
+  if (root_addr_ == kNull) {
+    return GenericIterator(kNull, -1, const_cast<GenericTreeSet *>(this));
+  }
+  const uint64_t lf = leftmost_leaf(scope, root_addr_);
+  return GenericIterator(lf, 0, const_cast<GenericTreeSet *>(this));
+}
+
+FORCE_INLINE GenericTreeSet::GenericIterator
+GenericTreeSet::end(const DerefScope &scope) const {
+  return GenericIterator(kNull, -1, const_cast<GenericTreeSet *>(this));
+}
+
+FORCE_INLINE GenericTreeSet::ReverseGenericIterator
+GenericTreeSet::rbegin(const DerefScope &scope) const {
+  TreeReadLock rlk(tree_mu_, concurrent_access_);
+  if (root_addr_ == kNull) {
+    return ReverseGenericIterator(kNull, -1,
+                                    const_cast<GenericTreeSet *>(this));
+  }
+  const uint64_t lf = rightmost_leaf(scope, root_addr_);
+  const uint8_t *b = page_deref(scope, lf);
+  const int32_t idx = static_cast<int32_t>(hdr(b)->num_keys) - 1;
+  return ReverseGenericIterator(lf, idx, const_cast<GenericTreeSet *>(this));
+}
+
+FORCE_INLINE GenericTreeSet::ReverseGenericIterator
+GenericTreeSet::rend(const DerefScope &scope) const {
+  return ReverseGenericIterator(kNull, -1, const_cast<GenericTreeSet *>(this));
 }
 
 FORCE_INLINE GenericTreeSet::GenericIterator
 GenericTreeSet::find(const DerefScope &scope, const uint8_t *data) const {
-  uint64_t addr = find_node(scope, data);
-  return GenericIterator(addr, const_cast<GenericTreeSet *>(this));
+  TreeReadLock rlk(tree_mu_, concurrent_access_);
+  if (root_addr_ == kNull) {
+    return end(scope);
+  }
+  uint64_t cur = root_addr_;
+  for (;;) {
+    const uint8_t *base = page_deref(scope, cur);
+    const BPlusPageHdr *h = hdr(base);
+    if (h->is_leaf) {
+      const uint16_t pos = leaf_lower_bound(base, data);
+      if (pos < h->num_keys &&
+          cmp_key(data, leaf_key_ptr(base, pos)) == 0) {
+        return GenericIterator(cur, static_cast<int32_t>(pos),
+                               const_cast<GenericTreeSet *>(this));
+      }
+      return end(scope);
+    }
+    const uint16_t ci = internal_child_index(base, data);
+    const uint64_t nxt = *internal_child_ptr(const_cast<uint8_t *>(base), ci);
+    prefetch_unique_ptr_handle(nxt);
+    cur = nxt;
+  }
 }
 
-FORCE_INLINE const uint8_t *GenericTreeSet::min(const DerefScope &scope) const {
-  uint64_t min_addr = find_minimum(scope, root_addr_);
-  if (min_addr == TreeNode::kNullAddr) {
+FORCE_INLINE const uint8_t *
+GenericTreeSet::min(const DerefScope &scope) const {
+  TreeReadLock rlk(tree_mu_, concurrent_access_);
+  if (root_addr_ == kNull) {
     return nullptr;
   }
-  TreeNode *node = get_node(scope, min_addr);
-  return node->data;
+  const uint64_t lf = leftmost_leaf(scope, root_addr_);
+  const uint8_t *b = page_deref(scope, lf);
+  if (hdr(b)->num_keys == 0) {
+    return nullptr;
+  }
+  return leaf_key_ptr(b, 0);
 }
 
-FORCE_INLINE const uint8_t *GenericTreeSet::max(const DerefScope &scope) const {
-  uint64_t max_addr = find_maximum(scope, root_addr_);
-  if (max_addr == TreeNode::kNullAddr) {
+FORCE_INLINE const uint8_t *
+GenericTreeSet::max(const DerefScope &scope) const {
+  TreeReadLock rlk(tree_mu_, concurrent_access_);
+  if (root_addr_ == kNull) {
     return nullptr;
   }
-  TreeNode *node = get_node(scope, max_addr);
-  return node->data;
+  const uint64_t lf = rightmost_leaf(scope, root_addr_);
+  const uint8_t *b = page_deref(scope, lf);
+  if (hdr(b)->num_keys == 0) {
+    return nullptr;
+  }
+  return leaf_key_ptr(b, hdr(b)->num_keys - 1);
+}
+
+FORCE_INLINE void GenericTreeSet::range_query(
+    const DerefScope &scope, const uint8_t *lo, const uint8_t *hi,
+    std::vector<uint8_t> *out_bytes) const {
+  out_bytes->clear();
+  if (cmp_key(lo, hi) > 0) {
+    return;
+  }
+  uint64_t leaf = kNull;
+  uint16_t pos = 0;
+  {
+    TreeReadLock rlk(tree_mu_, concurrent_access_);
+    if (root_addr_ == kNull) {
+      return;
+    }
+    uint64_t cur = root_addr_;
+    for (;;) {
+      const uint8_t *base = page_deref(scope, cur);
+      const BPlusPageHdr *h = hdr(base);
+      if (h->is_leaf) {
+        pos = leaf_lower_bound(base, lo);
+        leaf = cur;
+        break;
+      }
+      const uint16_t ci = internal_child_index(base, lo);
+      const uint64_t nxt = *internal_child_ptr(const_cast<uint8_t *>(base), ci);
+      prefetch_unique_ptr_handle(nxt);
+      cur = nxt;
+    }
+  }
+
+  while (leaf != kNull) {
+    const uint8_t *lb = page_deref(scope, leaf);
+    const BPlusPageHdr *lh = hdr(lb);
+    const uint64_t nxt_leaf = lh->next_leaf;
+    if (nxt_leaf != kNull) {
+      prefetch_unique_ptr_handle(nxt_leaf);
+    }
+    for (uint16_t i = pos; i < lh->num_keys; ++i) {
+      const uint8_t *kp = leaf_key_ptr(lb, i);
+      if (cmp_key(kp, hi) > 0) {
+        return;
+      }
+      if (cmp_key(kp, lo) >= 0 && cmp_key(kp, hi) <= 0) {
+        size_t off = out_bytes->size();
+        out_bytes->resize(off + item_size_);
+        memcpy(out_bytes->data() + off, kp, item_size_);
+      }
+    }
+    leaf = nxt_leaf;
+    pos = 0;
+  }
 }
 
 FORCE_INLINE uint64_t GenericTreeSet::size() const { return size_; }
 
 FORCE_INLINE bool GenericTreeSet::empty() const { return size_ == 0; }
 
-FORCE_INLINE void GenericTreeSet::clear(const DerefScope &scope) {
-  // Post-order traversal to free all nodes
-  std::function<void(uint64_t)> clear_subtree = [&](uint64_t addr) {
-    if (addr == TreeNode::kNullAddr) {
-      return;
+inline void GenericTreeSet::clear_recursive(const DerefScope &scope,
+                                            uint64_t node_addr) {
+  uint8_t *base = page_deref_mut(scope, node_addr);
+  BPlusPageHdr *h = hdr_mut(base);
+  if (!h->is_leaf) {
+    for (uint16_t i = 0; i <= h->num_keys; ++i) {
+      clear_recursive(scope, *internal_child_ptr(base, i));
     }
-    TreeNode *node = get_node(scope, addr);
-    clear_subtree(node->left_addr);
-    clear_subtree(node->right_addr);
-    free_node(addr);
-  };
-
-  clear_subtree(root_addr_);
-  root_addr_ = TreeNode::kNullAddr;
-  size_ = 0;
+  }
+  free_page_raw(node_addr);
 }
 
-// ============================================================================
+FORCE_INLINE void GenericTreeSet::clear(const DerefScope &scope) {
+  TreeWriteLock wlk(tree_mu_, concurrent_access_);
+  if (root_addr_ != kNull) {
+    clear_recursive(scope, root_addr_);
+    root_addr_ = kNull;
+    size_ = 0;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Delete (borrow / merge)
+// -----------------------------------------------------------------------------
+
+FORCE_INLINE bool GenericTreeSet::remove_key_leaf(const DerefScope &scope,
+                                                  uint64_t leaf_addr,
+                                                  const uint8_t *key) {
+  uint8_t *base = page_deref_mut(scope, leaf_addr);
+  BPlusPageHdr *hp = hdr_mut(base);
+  uint16_t pos = leaf_lower_bound(base, key);
+  if (pos >= hp->num_keys ||
+      cmp_key(key, leaf_key_ptr(base, pos)) != 0) {
+    return false;
+  }
+
+  memmove(leaf_key_ptr(base, pos), leaf_key_ptr(base, pos + 1),
+          static_cast<size_t>(hp->num_keys - pos - 1) * item_size_);
+  hp->num_keys--;
+
+  if (leaf_addr == root_addr_) {
+    if (hp->num_keys == 0) {
+      free_page_raw(leaf_addr);
+      root_addr_ = kNull;
+    }
+    return true;
+  }
+
+  if (hp->num_keys >= min_leaf_keys_) {
+    return true;
+  }
+
+  uint64_t parent = hp->parent_ptr;
+  uint8_t *pbase = page_deref_mut(scope, parent);
+  BPlusPageHdr *pp = hdr_mut(pbase);
+  uint16_t idx = hp->index_in_parent;
+
+  auto try_borrow_right = [&]() -> bool {
+    if (idx >= pp->num_keys) {
+      return false;
+    }
+    uint64_t rsib = *internal_child_ptr(pbase, idx + 1);
+    uint8_t *rb = page_deref_mut(scope, rsib);
+    BPlusPageHdr *rh = hdr_mut(rb);
+    if (rh->num_keys <= min_leaf_keys_) {
+      return false;
+    }
+
+    memcpy(leaf_key_ptr(base, hp->num_keys),
+           leaf_key_ptr(rb, 0), item_size_);
+    hp->num_keys++;
+    memmove(leaf_key_ptr(rb, 0), leaf_key_ptr(rb, 1),
+            static_cast<size_t>(rh->num_keys - 1) * item_size_);
+    rh->num_keys--;
+    memcpy(internal_key_ptr(pbase, idx),
+           leaf_key_ptr(rb, 0), item_size_);
+    return true;
+  };
+
+  auto try_borrow_left = [&]() -> bool {
+    if (idx == 0) {
+      return false;
+    }
+    uint64_t lsib = *internal_child_ptr(pbase, idx - 1);
+    uint8_t *lb = page_deref_mut(scope, lsib);
+    BPlusPageHdr *lh = hdr_mut(lb);
+    if (lh->num_keys <= min_leaf_keys_) {
+      return false;
+    }
+
+    memmove(leaf_key_ptr(base, 1), leaf_key_ptr(base, 0),
+            static_cast<size_t>(hp->num_keys) * item_size_);
+    memcpy(leaf_key_ptr(base, 0),
+           leaf_key_ptr(lb, lh->num_keys - 1), item_size_);
+    hp->num_keys++;
+    lh->num_keys--;
+    memcpy(internal_key_ptr(pbase, idx - 1),
+           leaf_key_ptr(base, 0), item_size_);
+    return true;
+  };
+
+  if (try_borrow_right() || try_borrow_left()) {
+    return true;
+  }
+
+  if (idx < pp->num_keys) {
+    uint64_t rsib = *internal_child_ptr(pbase, idx + 1);
+    uint8_t *rb = page_deref_mut(scope, rsib);
+    BPlusPageHdr *rh = hdr_mut(rb);
+    memcpy(leaf_key_ptr(base, hp->num_keys), leaf_key_ptr(rb, 0),
+           static_cast<size_t>(rh->num_keys) * item_size_);
+    hp->num_keys += rh->num_keys;
+
+    if (rh->next_leaf != kNull) {
+      uint8_t *nx = page_deref_mut(scope, rh->next_leaf);
+      hdr_mut(nx)->prev_leaf = leaf_addr;
+    }
+    hp->next_leaf = rh->next_leaf;
+
+    memmove(internal_key_ptr(pbase, idx),
+            internal_key_ptr(pbase, idx + 1),
+            static_cast<size_t>(pp->num_keys - idx - 1) * item_size_);
+    memmove(internal_child_ptr(pbase, idx + 1),
+            internal_child_ptr(pbase, idx + 2),
+            static_cast<size_t>(pp->num_keys - idx) * sizeof(uint64_t));
+
+    pp->num_keys--;
+    free_page_raw(rsib);
+
+    if (pp->num_keys == 0) {
+      uint64_t sole = *internal_child_ptr(pbase, 0);
+      if (parent == root_addr_) {
+        root_addr_ = sole;
+        uint8_t *sb = page_deref_mut(scope, sole);
+        hdr_mut(sb)->parent_ptr = kNull;
+        hdr_mut(sb)->index_in_parent = kRootIndex;
+      } else {
+        uint64_t gp = pp->parent_ptr;
+        uint8_t *gb = page_deref_mut(scope, gp);
+        uint16_t pi = pp->index_in_parent;
+        *internal_child_ptr(gb, pi) = sole;
+        uint8_t *sb = page_deref_mut(scope, sole);
+        hdr_mut(sb)->parent_ptr = gp;
+        hdr_mut(sb)->index_in_parent = pi;
+      }
+      free_page_raw(parent);
+    }
+    return true;
+  }
+
+  if (idx > 0) {
+    uint64_t lsib = *internal_child_ptr(pbase, idx - 1);
+    uint8_t *lb = page_deref_mut(scope, lsib);
+    BPlusPageHdr *lh = hdr_mut(lb);
+    memcpy(leaf_key_ptr(lb, lh->num_keys), leaf_key_ptr(base, 0),
+           static_cast<size_t>(hp->num_keys) * item_size_);
+    lh->num_keys += hp->num_keys;
+
+    if (hp->next_leaf != kNull) {
+      uint8_t *nx = page_deref_mut(scope, hp->next_leaf);
+      hdr_mut(nx)->prev_leaf = lsib;
+    }
+    lh->next_leaf = hp->next_leaf;
+
+    memmove(internal_key_ptr(pbase, idx - 1),
+            internal_key_ptr(pbase, idx),
+            static_cast<size_t>(pp->num_keys - idx) * item_size_);
+    memmove(internal_child_ptr(pbase, idx),
+            internal_child_ptr(pbase, idx + 1),
+            static_cast<size_t>(pp->num_keys - idx + 1) * sizeof(uint64_t));
+
+    pp->num_keys--;
+    free_page_raw(leaf_addr);
+
+    if (pp->num_keys == 0) {
+      uint64_t sole = *internal_child_ptr(pbase, 0);
+      if (parent == root_addr_) {
+        root_addr_ = sole;
+        uint8_t *sb = page_deref_mut(scope, sole);
+        hdr_mut(sb)->parent_ptr = kNull;
+        hdr_mut(sb)->index_in_parent = kRootIndex;
+      } else {
+        uint64_t gp = pp->parent_ptr;
+        uint8_t *gb = page_deref_mut(scope, gp);
+        uint16_t pi = pp->index_in_parent;
+        *internal_child_ptr(gb, pi) = sole;
+        uint8_t *sb = page_deref_mut(scope, sole);
+        hdr_mut(sb)->parent_ptr = gp;
+        hdr_mut(sb)->index_in_parent = pi;
+      }
+      free_page_raw(parent);
+    }
+    return true;
+  }
+
+  return true;
+}
+
+FORCE_INLINE bool GenericTreeSet::remove(const DerefScope &scope,
+                                         const uint8_t *data) {
+  TreeWriteLock wlk(tree_mu_, concurrent_access_);
+  if (root_addr_ == kNull) {
+    return false;
+  }
+
+  uint64_t leaf_addr = kNull;
+  {
+    uint64_t cur = root_addr_;
+    for (;;) {
+      uint8_t *cb = page_deref_mut(scope, cur);
+      BPlusPageHdr *ch = hdr_mut(cb);
+      if (ch->is_leaf) {
+        leaf_addr = cur;
+        break;
+      }
+      uint16_t ci = internal_child_index(cb, data);
+      const uint64_t nxt = *internal_child_ptr(cb, ci);
+      prefetch_unique_ptr_handle(nxt);
+      cur = nxt;
+    }
+  }
+
+  if (!remove_key_leaf(scope, leaf_addr, data)) {
+    return false;
+  }
+  size_--;
+  return true;
+}
+
+// -----------------------------------------------------------------------------
 // TreeSet<T>
-// ============================================================================
+// -----------------------------------------------------------------------------
 
 template <typename T>
 FORCE_INLINE TreeSet<T>::TreeSet(uint8_t ds_id)
     : GenericTreeSet(sizeof(T), ds_id) {
-  // Set up comparison function for type T
   compare_fn_ = [](const uint8_t *a, const uint8_t *b) -> int {
-    const T &val_a = *reinterpret_cast<const T *>(a);
-    const T &val_b = *reinterpret_cast<const T *>(b);
-    if (val_a < val_b) return -1;
-    if (val_b < val_a) return 1;
+    const T &va = *reinterpret_cast<const T *>(a);
+    const T &vb = *reinterpret_cast<const T *>(b);
+    if (va < vb) {
+      return -1;
+    }
+    if (vb < va) {
+      return 1;
+    }
     return 0;
   };
 }
 
-template <typename T>
-FORCE_INLINE TreeSet<T>::~TreeSet() {}
+template <typename T> FORCE_INLINE TreeSet<T>::~TreeSet() {}
 
 template <typename T>
 template <bool Reverse>
@@ -757,8 +1070,8 @@ FORCE_INLINE TreeSet<T>::IteratorImpl<Reverse>::IteratorImpl()
 template <typename T>
 template <bool Reverse>
 FORCE_INLINE TreeSet<T>::IteratorImpl<Reverse>::IteratorImpl(
-    const GenericTreeSet::GenericIteratorImpl<Reverse> &generic_iter)
-    : GenericTreeSet::GenericIteratorImpl<Reverse>(generic_iter) {}
+    const GenericTreeSet::GenericIteratorImpl<Reverse> &gi)
+    : GenericTreeSet::GenericIteratorImpl<Reverse>(gi) {}
 
 template <typename T>
 template <bool Reverse>
@@ -788,8 +1101,7 @@ TreeSet<T>::begin(const DerefScope &scope) const {
 }
 
 template <typename T>
-FORCE_INLINE TreeSet<T>::Iterator
-TreeSet<T>::end(const DerefScope &scope) const {
+FORCE_INLINE TreeSet<T>::Iterator TreeSet<T>::end(const DerefScope &scope) const {
   return Iterator(GenericTreeSet::end(scope));
 }
 
@@ -817,24 +1129,50 @@ FORCE_INLINE bool TreeSet<T>::remove(const DerefScope &scope, const T &data) {
 
 template <typename T>
 FORCE_INLINE bool TreeSet<T>::contains(const DerefScope &scope,
-                                        const T &data) const {
-  return GenericTreeSet::contains(scope, reinterpret_cast<const uint8_t *>(&data));
+                                       const T &data) const {
+  return GenericTreeSet::contains(scope,
+                                  reinterpret_cast<const uint8_t *>(&data));
 }
 
 template <typename T>
 FORCE_INLINE TreeSet<T>::Iterator
 TreeSet<T>::find(const DerefScope &scope, const T &data) const {
-  return Iterator(GenericTreeSet::find(scope, reinterpret_cast<const uint8_t *>(&data)));
+  return Iterator(
+      GenericTreeSet::find(scope, reinterpret_cast<const uint8_t *>(&data)));
 }
 
 template <typename T>
 FORCE_INLINE const T &TreeSet<T>::min(const DerefScope &scope) const {
-  return *reinterpret_cast<const T *>(GenericTreeSet::min(scope));
+  const uint8_t *p = GenericTreeSet::min(scope);
+  static T zero{};
+  if (!p) {
+    return zero;
+  }
+  return *reinterpret_cast<const T *>(p);
 }
 
 template <typename T>
 FORCE_INLINE const T &TreeSet<T>::max(const DerefScope &scope) const {
-  return *reinterpret_cast<const T *>(GenericTreeSet::max(scope));
+  const uint8_t *p = GenericTreeSet::max(scope);
+  static T zero{};
+  if (!p) {
+    return zero;
+  }
+  return *reinterpret_cast<const T *>(p);
+}
+
+template <typename T>
+FORCE_INLINE void TreeSet<T>::range_query(const DerefScope &scope, const T &lo,
+                                          const T &hi,
+                                          std::vector<T> *out) const {
+  out->clear();
+  std::vector<uint8_t> raw;
+  GenericTreeSet::range_query(
+      scope, reinterpret_cast<const uint8_t *>(&lo),
+      reinterpret_cast<const uint8_t *>(&hi), &raw);
+  size_t n = raw.size() / sizeof(T);
+  out->resize(n);
+  memcpy(out->data(), raw.data(), raw.size());
 }
 
 } // namespace far_memory

@@ -167,6 +167,8 @@ public:
 
     // --- AIFM TreeSet ---
     auto ts = manager->allocate_treeset<uint64_t>();
+    ts.set_concurrent_access(false);
+    ts.set_track_page_loads(false);
 
     uint64_t ts_insert_us = bench_treeset_insert(ts, keys);
     uint64_t ts_contains_us = bench_treeset_contains(ts, lookup_keys);
@@ -187,6 +189,8 @@ public:
     // Warmup: small insert/remove cycle to prime allocator paths
     {
       auto warmup = manager->allocate_treeset<uint64_t>();
+      warmup.set_concurrent_access(false);
+      warmup.set_track_page_loads(false);
       DerefScope scope;
       for (uint32_t i = 0; i < kNumWarmupOps; i++) {
         warmup.insert(scope, (uint64_t)i);
@@ -229,6 +233,8 @@ public:
       std_us += bench_std_contains(tmp_std, lookup_keys);
 
       auto ts = manager->allocate_treeset<uint64_t>();
+      ts.set_concurrent_access(false);
+      ts.set_track_page_loads(false);
       uint64_t ts_us = bench_treeset_insert(ts, keys);
       ts_us += bench_treeset_contains(ts, lookup_keys);
 

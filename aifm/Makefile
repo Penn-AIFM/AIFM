@@ -95,6 +95,12 @@ test_embedded_pointer_obj = $(test_embedded_pointer_src:.cpp=.o)
 test_treeset_benchmark_src = test/test_treeset_benchmark.cpp
 test_treeset_benchmark_obj = $(test_treeset_benchmark_src:.cpp=.o)
 
+test_treeset_src = test/test_treeset.cpp
+test_treeset_obj = $(test_treeset_src:.cpp=.o)
+
+test_treeset_perf_src = test/test_treeset_perf.cpp
+test_treeset_perf_obj = $(test_treeset_perf_src:.cpp=.o)
+
 lib_src = $(wildcard src/*.cpp)
 lib_src := $(filter-out src/tcp_device_server.cpp,$(lib_src))
 lib_obj = $(lib_src:.cpp=.o)
@@ -107,7 +113,8 @@ $(test_hopscotch_parallel_src) $(test_hopscotch_gc_parallel_src) $(test_tcp_hops
 $(test_tcp_hopscotch_gc_parallel_src) $(test_hashtable_clock_replacement_src) $(test_local_list) \
 $(test_list) $(test_list_gc) $(test_queue_gc) $(test_stack_gc) $(test_pointer_swap_rw_api_src) \
 $(test_array_add_rw_api_src) $(test_dataframe_vector_src) $(test_csv_reader_src) $(test_shared_pointer_src) \
-$(test_embedded_pointer_src) $(test_treeset_benchmark_src)
+$(test_embedded_pointer_src) $(test_treeset_benchmark_src) $(test_treeset_src) \
+$(test_treeset_perf_src)
 test_obj = $(test_src:.cpp=.o)
 
 src = $(lib_src) $(test_src)
@@ -128,7 +135,7 @@ bin/test_hopscotch_gc_serial bin/test_hopscotch_parallel bin/test_hopscotch_gc_p
 bin/test_tcp_hopscotch_gc_serial bin/test_tcp_hopscotch_gc_parallel bin/test_hashtable_clock_replacement \
 bin/test_local_skiplist_serial bin/test_local_list bin/test_list bin/test_list_gc bin/test_queue_gc bin/test_stack_gc \
 bin/test_pointer_swap_rw_api bin/test_array_add_rw_api bin/test_dataframe_vector bin/test_csv_reader \
-bin/test_shared_pointer bin/test_embedded_pointer bin/test_treeset_benchmark libaifm.a
+bin/test_shared_pointer bin/test_embedded_pointer bin/test_treeset_benchmark bin/test_treeset bin/test_treeset_perf libaifm.a
 
 bin/test_pointer_noswap: $(test_pointer_noswap_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
 	$(LDXX) -o $@ $(test_pointer_noswap_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
@@ -222,6 +229,12 @@ bin/test_embedded_pointer: $(test_embedded_pointer_obj) $(librt_libs) $(RUNTIME_
 
 bin/test_treeset_benchmark: $(test_treeset_benchmark_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
 	$(LDXX) -o $@ $(test_treeset_benchmark_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
+
+bin/test_treeset: $(test_treeset_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
+	$(LDXX) -o $@ $(test_treeset_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
+
+bin/test_treeset_perf: $(test_treeset_perf_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
+	$(LDXX) -o $@ $(test_treeset_perf_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
 
 $(tcp_device_server_obj): $(tcp_device_server_src)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
