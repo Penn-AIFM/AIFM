@@ -206,6 +206,7 @@ private:
 
   template <typename D> friend class Queue;
   template <typename D> friend class Stack;
+  template <typename D> friend class Deque;
   friend class FarMemManager;
   friend class FarMemTest;
 
