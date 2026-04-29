@@ -53,6 +53,10 @@ def main():
         )
         return 1
 
+    # Auto-name output based on whether this is a TCP run.
+    if args.output == "deque_performance.png" and "tcp" in path.name:
+        args.output = "tcp_deque_performance.png"
+
     data = json.loads(path.read_text())
     runs = data.get("runs", [])
     if not runs:
