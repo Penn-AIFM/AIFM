@@ -17,8 +17,8 @@ extern "C" {
 using namespace far_memory;
 using namespace std;
 
-constexpr uint64_t kCacheSize = (1ULL << 30);
-constexpr uint64_t kFarMemSize = (4ULL << 30);
+constexpr uint64_t kCacheSize = (256ULL << 20);
+constexpr uint64_t kFarMemSize = (8ULL << 30);
 constexpr uint32_t kNumGCThreads = 12;
 constexpr uint32_t kScopeResetInterval = 256;
 
