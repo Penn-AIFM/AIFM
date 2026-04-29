@@ -118,6 +118,9 @@ test_deque_perf_obj = $(test_deque_perf_src:.cpp=.o)
 test_deque_minimal_src = test/test_deque_minimal.cpp
 test_deque_minimal_obj = $(test_deque_minimal_src:.cpp=.o)
 
+test_tcp_deque_perf_src = test/test_tcp_deque_perf.cpp
+test_tcp_deque_perf_obj = $(test_tcp_deque_perf_src:.cpp=.o)
+
 lib_src = $(wildcard src/*.cpp)
 lib_src := $(filter-out src/tcp_device_server.cpp,$(lib_src))
 lib_obj = $(lib_src:.cpp=.o)
@@ -132,7 +135,7 @@ $(test_list) $(test_list_gc) $(test_queue_gc) $(test_stack_gc) $(test_heap_src) 
 $(test_array_add_rw_api_src) $(test_dataframe_vector_src) $(test_csv_reader_src) $(test_shared_pointer_src) \
 $(test_embedded_pointer_src) $(test_treeset_benchmark_src) $(test_treeset_src) \
 $(test_treeset_perf_src) $(test_bitmap_src) \
-$(test_deque_gc_src) $(test_deque_perf_src) $(test_deque_minimal_src)
+$(test_deque_gc_src) $(test_deque_perf_src) $(test_deque_minimal_src) $(test_tcp_deque_perf_src)
 test_obj = $(test_src:.cpp=.o)
 
 src = $(lib_src) $(test_src)
@@ -154,7 +157,7 @@ bin/test_tcp_hopscotch_gc_serial bin/test_tcp_hopscotch_gc_parallel bin/test_has
 bin/test_local_skiplist_serial bin/test_local_list bin/test_list bin/test_list_gc bin/test_queue_gc bin/test_stack_gc bin/test_heap \
 bin/test_pointer_swap_rw_api bin/test_array_add_rw_api bin/test_dataframe_vector bin/test_csv_reader \
 bin/test_shared_pointer bin/test_embedded_pointer bin/test_treeset_benchmark bin/test_treeset bin/test_treeset_perf bin/test_bitmap \
-bin/test_deque_gc bin/test_deque_perf bin/test_deque_minimal libaifm.a
+bin/test_deque_gc bin/test_deque_perf bin/test_deque_minimal bin/test_tcp_deque_perf libaifm.a
 
 bin/test_pointer_noswap: $(test_pointer_noswap_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
 	$(LDXX) -o $@ $(test_pointer_noswap_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
@@ -271,6 +274,9 @@ bin/test_deque_perf: $(test_deque_perf_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_
 
 bin/test_deque_minimal: $(test_deque_minimal_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
 	$(LDXX) -o $@ $(test_deque_minimal_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
+
+bin/test_tcp_deque_perf: $(test_tcp_deque_perf_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
+	$(LDXX) -o $@ $(test_tcp_deque_perf_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
 
 $(tcp_device_server_obj): $(tcp_device_server_src)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
