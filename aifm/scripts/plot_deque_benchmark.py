@@ -35,8 +35,8 @@ def main():
         help="JSON from test_deque_perf (default: ./deque_perf_report.json).",
     )
     parser.add_argument(
-        "-o", "--output", default="performance.png",
-        help="Output image path (default: performance.png).",
+        "-o", "--output", default="deque_performance.png",
+        help="Output image path (default: deque_performance.png).",
     )
     args = parser.parse_args()
 
