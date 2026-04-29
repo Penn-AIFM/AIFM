@@ -23,7 +23,7 @@ constexpr uint32_t kNumGCThreads = 12;
 constexpr uint32_t kScopeResetInterval = 256;
 
 // Sizes chosen so each workload fits in far-memory with meaningful GC pressure.
-static const uint32_t kSizes[] = {1<<15, 1<<16, 1<<17, 1<<18, 1<<19, 1<<20};
+static const uint32_t kSizes[] = {1<<15, 1<<16, 1<<17, 1<<18, 1<<19, 1<<20, 1<<21, 1<<22};
 
 class DequePerfReport {
 public:
