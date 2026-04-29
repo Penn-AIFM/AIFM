@@ -117,6 +117,18 @@ FORCE_INLINE TreeSet<T> *FarMemManager::allocate_treeset_heap() {
 
 // TREESET: END CHANGES
 
+template <typename NodeId>
+FORCE_INLINE Graph<NodeId> FarMemManager::allocate_graph(
+    uint32_t max_nodes, uint16_t chunk_capacity) {
+  return Graph<NodeId>(this, allocate_ds_id(), max_nodes, chunk_capacity);
+}
+
+template <typename NodeId>
+FORCE_INLINE Graph<NodeId> *FarMemManager::allocate_graph_heap(
+    uint32_t max_nodes, uint16_t chunk_capacity) {
+  return new Graph<NodeId>(this, allocate_ds_id(), max_nodes, chunk_capacity);
+}
+
 template <typename T, uint64_t MaxN>
 FORCE_INLINE Heap<T, MaxN> FarMemManager::allocate_heap() {
   return Heap<T, MaxN>(this);
