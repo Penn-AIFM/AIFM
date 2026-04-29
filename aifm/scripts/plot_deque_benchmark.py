@@ -103,6 +103,17 @@ def main():
         print(f"wrote {svg_path.resolve()}")
         return 0
 
+    import math as _math
+    xticks = sorted(set(ns))
+    xlabels = [f"$2^{{{int(_math.log2(n))}}}$" if n > 0 and (n & (n-1)) == 0
+               else str(n) for n in xticks]
+
+    def _logax(ax):
+        ax.set_xscale("log", base=2)
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(xlabels)
+        ax.grid(True, alpha=0.3, which="both")
+
     fig, axes = plt.subplots(3, 1, figsize=(9, 11))
     fig.suptitle("far_memory::Deque vs std::deque")
 
@@ -119,7 +130,7 @@ def main():
     ax.set_ylabel("latency (µs)")
     ax.set_title("Push latency")
     ax.legend()
-    ax.grid(True, alpha=0.3)
+    _logax(ax)
 
     # Panel 1: pop latency
     ax = axes[1]
@@ -134,7 +145,7 @@ def main():
     ax.set_ylabel("latency (µs)")
     ax.set_title("Pop latency")
     ax.legend()
-    ax.grid(True, alpha=0.3)
+    _logax(ax)
 
     # Panel 2: mixed throughput
     ax = axes[2]
@@ -146,7 +157,7 @@ def main():
     ax.set_ylabel("throughput (ops/sec)")
     ax.set_title("Mixed-op throughput (N / total_us)")
     ax.legend()
-    ax.grid(True, alpha=0.3)
+    _logax(ax)
 
     plt.tight_layout()
     fig.savefig(out_path, dpi=150)
