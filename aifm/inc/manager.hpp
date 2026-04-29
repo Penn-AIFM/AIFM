@@ -30,6 +30,7 @@
 namespace far_memory {
 
 template <typename T> class DataFrameVector;
+template <typename NodeId> class Graph;
 
 // A GCTask is an interval of (to be GCed) local region.
 using GCTask = std::pair<uint64_t, uint64_t>;
@@ -207,6 +208,12 @@ public:
   template <typename T> TreeSet<T> *allocate_treeset_heap();
 
   // TREESET: END CHANGES
+  template <typename NodeId = uint32_t>
+  Graph<NodeId> allocate_graph(uint32_t max_nodes,
+                               uint16_t chunk_capacity = 0);
+  template <typename NodeId = uint32_t>
+  Graph<NodeId> *allocate_graph_heap(uint32_t max_nodes,
+                                     uint16_t chunk_capacity = 0);
   template <typename T, uint64_t MaxN> Heap<T, MaxN> allocate_heap();
   void register_eval_notifier(uint8_t ds_id, EvacNotifier notifier);
   void register_copy_notifier(uint8_t ds_id, CopyNotifier notifier);
@@ -237,5 +244,6 @@ public:
 
 } // namespace far_memory
 
+#include "graph.hpp"
 #include "internal/treeset.ipp"
 #include "internal/manager.ipp"
