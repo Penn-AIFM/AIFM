@@ -19,16 +19,18 @@ dep = $(obj:.o=.d)
 CXXFLAGS := $(filter-out -std=gnu++17,$(CXXFLAGS))
 override CXXFLAGS += -std=gnu++2a -fconcepts -Wno-unused-function -mcmodel=medium
 
-# must be first
+#must be first
 all: main
 
 main: $(main_obj) $(librt_libs) $(RUNTIME_DEPS) $(main_obj) $(lib_obj)
 	$(LDXX) -o $@ $(LDFLAGS) $(main_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS)
 
 ifneq ($(MAKECMDGOALS),clean)
--include $(dep)
+-include $(dep)   # include all dep files in the makefile
 endif
 
+#rule to generate a dep file by using the C preprocessor
+#(see man cpp for details on the - MM and - MT options)
 %.d: %.cpp
 	@$(CXX) $(CXXFLAGS) $< -MM -MT $(@:.d=.o) >$@
 %.o: %.cpp
