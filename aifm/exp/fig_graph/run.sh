@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AIFM_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -8,7 +8,7 @@ AIFM_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${AIFM_ROOT}/shared.sh"
 
 MODE="${1:-fake}"  # fake | tcp
-EDGE_FACTOR="${EDGE_FACTOR:-8}"
+EDGE_FACTOR="${EDGE_FACTOR:-512}"
 TRIALS="${TRIALS:-5}"
 N_ARR=(4096 8192 16384 32768 65536 131072)
 
