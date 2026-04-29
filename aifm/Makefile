@@ -159,6 +159,13 @@ bin/test_pointer_swap_rw_api bin/test_array_add_rw_api bin/test_dataframe_vector
 bin/test_shared_pointer bin/test_embedded_pointer bin/test_treeset_benchmark bin/test_treeset bin/test_treeset_perf bin/test_bitmap \
 bin/test_deque_gc bin/test_deque_perf bin/test_deque_minimal bin/test_tcp_deque_perf libaifm.a
 
+.PHONY: deque_benchmark
+deque_benchmark: bin/test_deque_perf bin/test_tcp_deque_perf
+	./run_one_test.sh test_deque_perf
+	./run_one_test.sh test_tcp_deque_perf
+	python3 scripts/plot_deque_benchmark.py deque_perf_report.json
+	python3 scripts/plot_deque_benchmark.py tcp_deque_perf_report.json
+
 bin/test_pointer_noswap: $(test_pointer_noswap_obj) $(librt_libs) $(RUNTIME_DEPS) $(lib_obj)
 	$(LDXX) -o $@ $(test_pointer_noswap_obj) $(lib_obj) $(librt_libs) $(RUNTIME_LIBS) $(LDFLAGS)
 

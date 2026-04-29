@@ -53,9 +53,11 @@ def main():
         )
         return 1
 
-    # Auto-name output based on whether this is a TCP run.
-    if args.output == "deque_performance.png" and "tcp" in path.name:
+    # Auto-name output and title based on whether this is a TCP run.
+    is_tcp = "tcp" in path.name
+    if args.output == "deque_performance.png" and is_tcp:
         args.output = "tcp_deque_performance.png"
+    plot_title = "far_memory::Deque vs std::deque (TCP / Remote)" if is_tcp else "far_memory::Deque vs std::deque (Local)"
 
     data = json.loads(path.read_text())
     runs = data.get("runs", [])
@@ -97,7 +99,8 @@ def main():
                    fm_fast_pf if has_fast else None,
                    fm_fast_dpf if has_fast else None,
                    fm_fast_dpb if has_fast else None,
-                   fm_fast_mx if has_fast else None)
+                   fm_fast_mx if has_fast else None,
+                   title=plot_title)
         print(
             "note: matplotlib not installed; wrote SVG. "
             "Install: python3 -m pip install --user --only-binary :all: "
@@ -119,7 +122,7 @@ def main():
         ax.grid(True, alpha=0.3, which="both")
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 11))
-    fig.suptitle("far_memory::Deque vs std::deque")
+    fig.suptitle(plot_title)
 
     # Panel 0: push latency
     ax = axes[0]
@@ -213,7 +216,8 @@ def _write_svg(path, ns,
                std_pb, std_pf, std_dpf, std_dpb, std_mx,
                fm_pb, fm_pf, fm_dpf, fm_dpb, fm_mx,
                fm_fast_pb=None, fm_fast_pf=None,
-               fm_fast_dpf=None, fm_fast_dpb=None, fm_fast_mx=None):
+               fm_fast_dpf=None, fm_fast_dpb=None, fm_fast_mx=None,
+               title="far_memory::Deque vs std::deque"):
     t_std      = _tput(ns, std_mx)
     t_fm       = _tput(ns, fm_mx)
     t_fm_fast  = _tput(ns, fm_fast_mx) if fm_fast_mx else None
@@ -261,7 +265,7 @@ def _write_svg(path, ns,
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">',
         f'<rect fill="white" x="0" y="0" width="{w}" height="{h}"/>',
         f'<text x="{w//2}" y="28" text-anchor="middle" font-size="16" font-family="sans-serif">'
-        'far_memory::Deque vs std::deque</text>',
+        f'{_esc(title)}</text>',
     ]
 
     for idx, (title, series) in enumerate(panels):
