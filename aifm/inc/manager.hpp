@@ -14,6 +14,7 @@
 #include "obj_locker.hpp"
 #include "parallel.hpp"
 #include "pointer.hpp"
+#include "deque.hpp"
 #include "queue.hpp"
 #include "region.hpp"
 #include "stack.hpp"
@@ -201,6 +202,11 @@ public:
   List<T> allocate_list(const DerefScope &scope, bool enable_merge = false);
   template <typename T> Queue<T> allocate_queue(const DerefScope &scope);
   template <typename T> Stack<T> allocate_stack(const DerefScope &scope);
+  // DEQUE: BEGIN CHANGES
+  template <typename T>
+  Deque<T> allocate_deque(const DerefScope &scope,
+                          bool customized_split = false);
+  // DEQUE: END CHANGES
 
   // TREESET: BEGIN CHANGES
   template <typename T> TreeSet<T> allocate_treeset();
