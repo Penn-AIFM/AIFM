@@ -80,6 +80,15 @@ void ServerBitmap::compute(uint8_t opcode, uint16_t input_len,
     *reinterpret_cast<uint64_t *>(output_buf) = total;
     return;
   }
+  case kOpGetWord: {
+    auto reader_lock = lock_.get_reader_lock();
+    BUG_ON(input_len != sizeof(uint64_t));
+    auto word_idx = *reinterpret_cast<const uint64_t *>(input_buf);
+    BUG_ON(word_idx >= words_.size());
+    *output_len = sizeof(uint64_t);
+    *reinterpret_cast<uint64_t *>(output_buf) = words_[word_idx];
+    return;
+  }
   default:
     BUG();
   }

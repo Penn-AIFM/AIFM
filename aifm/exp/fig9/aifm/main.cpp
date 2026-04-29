@@ -47,7 +47,7 @@ private:
   constexpr static uint32_t kMonitorPerIter = 262144;
   constexpr static uint32_t kMinMonitorIntervalUs = 10 * 1000 * 1000;
   constexpr static uint32_t kMaxRunningUs = 200 * 1000 * 1000; // 200 seconds
-  constexpr static double kZipfParamS = 0;
+  constexpr static double kZipfParamS = 0.05;
 
   struct Key {
     char data[kKeyLen];
