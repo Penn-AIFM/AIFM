@@ -104,6 +104,14 @@ FORCE_INLINE Stack<T> FarMemManager::allocate_stack(const DerefScope &scope) {
   return Stack<T>(scope);
 }
 
+// DEQUE: BEGIN CHANGES
+template <typename T>
+FORCE_INLINE Deque<T> FarMemManager::allocate_deque(const DerefScope &scope,
+                                                     bool customized_split) {
+  return Deque<T>(scope, customized_split);
+}
+// DEQUE: END CHANGES
+
 // TREESET: BEGIN CHANGES
 template <typename T>
 FORCE_INLINE TreeSet<T> FarMemManager::allocate_treeset() {
