@@ -16,6 +16,7 @@ private:
     kOpTest = 2,
     kOpReset = 3,
     kOpCount = 4,
+    kOpGetWord = 5,
   };
 
   ReaderWriterLock lock_;
