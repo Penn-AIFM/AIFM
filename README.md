@@ -132,3 +132,7 @@ AIFM is a research prototype rather than a production-ready system. Its current 
 
 ## Contact
 Contact zainruan [at] csail [dot] mit [dot] edu for assistance.
+
+## Updates (Penn AIFM)
+- Added deque, graph, treeset, and heap data structures
+- Added benchmarking for local and TCP performance along with visualization scripts
